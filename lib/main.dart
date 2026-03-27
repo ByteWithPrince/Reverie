@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:reverie/screens/library_screen.dart';
+import 'package:reverie/screens/onboarding_screen.dart';
 import 'package:reverie/screens/reader_screen.dart';
 import 'package:reverie/screens/splash_screen.dart';
 import 'package:reverie/theme/app_theme.dart';
@@ -27,6 +28,11 @@ final GoRouter _router = GoRouter(
       path: '/',
       builder: (BuildContext context, GoRouterState state) =>
           const SplashScreen(),
+    ),
+    GoRoute(
+      path: '/onboarding',
+      builder: (BuildContext context, GoRouterState state) =>
+          const OnboardingScreen(),
     ),
     GoRoute(
       path: '/library',

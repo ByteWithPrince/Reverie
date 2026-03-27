@@ -1,6 +1,9 @@
 import 'dart:convert';
 import 'dart:io';
 
+
+import 'package:archive/archive.dart';
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -11,99 +14,207 @@ import 'package:reverie/theme/app_theme.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 1. DATA MODEL
+// 1. EPUB METADATA
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class EpubMetadata {
+  final String title;
+  final String author;
+  final Uint8List? coverBytes;
+
+  const EpubMetadata({
+    required this.title,
+    required this.author,
+    this.coverBytes,
+  });
+}
+
+String _cleanFileName(String name) {
+  return name
+      .replaceAll('_', ' ')
+      .replaceAll('-', ' ')
+      .replaceAll('.', ' ')
+      .split(' ')
+      .map((String w) =>
+          w.isEmpty ? '' : w[0].toUpperCase() + w.substring(1).toLowerCase())
+      .join(' ')
+      .trim();
+}
+
+/// Extracts metadata from an EPUB file (ZIP-based format).
+/// Runs synchronously — designed to be called outside isolates
+/// or from within compute() wrappers.
+Future<EpubMetadata> extractEpubMetadata(String filePath) async {
+  try {
+    final File file = File(filePath);
+    final Uint8List bytes = await file.readAsBytes();
+    final Archive archive = ZipDecoder().decodeBytes(bytes);
+
+    String title = _cleanFileName(
+        filePath.split('/').last.replaceAll('.epub', ''));
+    String author = 'Unknown Author';
+    Uint8List? coverBytes;
+
+    // Find and parse the OPF file for metadata
+    for (final ArchiveFile archiveFile in archive) {
+      if (archiveFile.name.endsWith('.opf')) {
+        final String content = utf8.decode(archiveFile.content as List<int>);
+
+        // Extract title
+        final RegExpMatch? titleMatch =
+            RegExp(r'<dc:title[^>]*>([^<]+)<\/dc:title>')
+                .firstMatch(content);
+        if (titleMatch != null) {
+          title = titleMatch.group(1)?.trim() ?? title;
+        }
+
+        // Extract author
+        final RegExpMatch? authorMatch =
+            RegExp(r'<dc:creator[^>]*>([^<]+)<\/dc:creator>')
+                .firstMatch(content);
+        if (authorMatch != null) {
+          author = authorMatch.group(1)?.trim() ?? author;
+        }
+
+        // Find cover image reference
+        final RegExpMatch? coverMatch =
+            RegExp(r'<item[^>]*id="cover[^"]*"[^>]*href="([^"]+)"')
+                .firstMatch(content);
+        if (coverMatch != null) {
+          final String coverPath = coverMatch.group(1) ?? '';
+          final String coverFileName = coverPath.split('/').last;
+          for (final ArchiveFile cf in archive) {
+            if (cf.name.endsWith(coverFileName) &&
+                cf.content != null &&
+                (cf.content as List<int>).isNotEmpty) {
+              coverBytes = Uint8List.fromList(cf.content as List<int>);
+              break;
+            }
+          }
+        }
+        break;
+      }
+    }
+
+    // Fallback: try common cover image names
+    if (coverBytes == null) {
+      for (final ArchiveFile archiveFile in archive) {
+        final String name = archiveFile.name.toLowerCase();
+        if ((name.contains('cover') || name.contains('title')) &&
+            (name.endsWith('.jpg') ||
+                name.endsWith('.jpeg') ||
+                name.endsWith('.png'))) {
+          if (archiveFile.content != null &&
+              (archiveFile.content as List<int>).isNotEmpty) {
+            coverBytes =
+                Uint8List.fromList(archiveFile.content as List<int>);
+            break;
+          }
+        }
+      }
+    }
+
+    return EpubMetadata(
+      title: title,
+      author: author,
+      coverBytes: coverBytes,
+    );
+  } catch (_) {
+    return EpubMetadata(
+      title: _cleanFileName(
+          filePath.split('/').last.replaceAll('.epub', '')),
+      author: 'Unknown Author',
+    );
+  }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 2. DATA MODEL
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class BookModel {
   final String filePath;
   final String title;
+  final String author;
   final String fileType;
   final DateTime dateAdded;
   final int fileSizeBytes;
   final double readingProgress;
   final bool isNew;
+  final String? coverBase64;
 
   const BookModel({
     required this.filePath,
     required this.title,
+    required this.author,
     required this.fileType,
     required this.dateAdded,
     required this.fileSizeBytes,
     this.readingProgress = 0.0,
     this.isNew = true,
+    this.coverBase64,
   });
+
+  Uint8List? get coverBytes {
+    if (coverBase64 == null || coverBase64!.isEmpty) return null;
+    try {
+      return base64Decode(coverBase64!);
+    } catch (_) {
+      return null;
+    }
+  }
 
   BookModel copyWith({
     String? filePath,
     String? title,
+    String? author,
     String? fileType,
     DateTime? dateAdded,
     int? fileSizeBytes,
     double? readingProgress,
     bool? isNew,
+    String? coverBase64,
   }) {
     return BookModel(
       filePath: filePath ?? this.filePath,
       title: title ?? this.title,
+      author: author ?? this.author,
       fileType: fileType ?? this.fileType,
       dateAdded: dateAdded ?? this.dateAdded,
       fileSizeBytes: fileSizeBytes ?? this.fileSizeBytes,
       readingProgress: readingProgress ?? this.readingProgress,
       isNew: isNew ?? this.isNew,
+      coverBase64: coverBase64 ?? this.coverBase64,
     );
   }
 
   Map<String, dynamic> toJson() => <String, dynamic>{
         'filePath': filePath,
         'title': title,
+        'author': author,
         'fileType': fileType,
         'dateAdded': dateAdded.toIso8601String(),
         'fileSizeBytes': fileSizeBytes,
         'readingProgress': readingProgress,
         'isNew': isNew,
+        'coverBase64': coverBase64,
       };
 
   factory BookModel.fromJson(Map<String, dynamic> json) => BookModel(
         filePath: json['filePath'] as String,
         title: json['title'] as String,
+        author: (json['author'] as String?) ?? 'Unknown Author',
         fileType: json['fileType'] as String,
         dateAdded: DateTime.parse(json['dateAdded'] as String),
         fileSizeBytes: json['fileSizeBytes'] as int,
         readingProgress: (json['readingProgress'] as num).toDouble(),
         isNew: json['isNew'] as bool,
+        coverBase64: json['coverBase64'] as String?,
       );
-
-  factory BookModel.fromFile(File file) {
-    final String path = file.path;
-    final String filename = path.split(Platform.pathSeparator).last;
-    final int dotIndex = filename.lastIndexOf('.');
-    final String rawName =
-        dotIndex > 0 ? filename.substring(0, dotIndex) : filename;
-    final String ext =
-        dotIndex > 0 ? filename.substring(dotIndex + 1).toLowerCase() : '';
-
-    return BookModel(
-      filePath: path,
-      title: _cleanTitle(rawName),
-      fileType: ext == 'epub' ? 'epub' : 'pdf',
-      dateAdded: DateTime.now(),
-      fileSizeBytes: file.existsSync() ? file.lengthSync() : 0,
-    );
-  }
-
-  static String _cleanTitle(String raw) {
-    final String cleaned = raw.replaceAll('_', ' ').replaceAll('-', ' ');
-    return cleaned
-        .split(RegExp(r'\s+'))
-        .where((String w) => w.isNotEmpty)
-        .map((String w) =>
-            w[0].toUpperCase() + (w.length > 1 ? w.substring(1) : ''))
-        .join(' ');
-  }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 2. RIVERPOD PROVIDERS
+// 3. RIVERPOD PROVIDERS
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 const String _prefsKey = 'reverie_library_books';
@@ -187,23 +298,36 @@ final StateProvider<String> scanProgressProvider =
     StateProvider<String>((Ref ref) => '');
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 3. BACKGROUND SCAN ISOLATE FUNCTION
+// 4. FILE SCANNER (top-level for compute)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-List<Map<String, dynamic>> _scanDirectories(List<String> paths) {
+/// Synchronous deep EPUB file scanner for use in compute() isolate.
+List<String> _scanForEpubFiles(dynamic _) {
+  final List<String> found = <String>[];
   final Set<String> seen = <String>{};
-  final List<Map<String, dynamic>> results = <Map<String, dynamic>>[];
+  final List<String> searchPaths = <String>[
+    '/storage/emulated/0/',
+    '/storage/emulated/0/Download/',
+    '/storage/emulated/0/Downloads/',
+    '/storage/emulated/0/Documents/',
+    '/storage/emulated/0/Books/',
+    '/storage/emulated/0/EPUB/',
+    '/storage/emulated/0/Ebooks/',
+    '/storage/emulated/0/Reading/',
+  ];
 
-  for (final String dirPath in paths) {
-    final Directory dir = Directory(dirPath);
-    if (!dir.existsSync()) continue;
-
+  for (final String path in searchPaths) {
     try {
-      _scanRecursive(dir, 0, 4, seen, results);
-    } catch (_) {}
+      final Directory dir = Directory(path);
+      if (!dir.existsSync()) continue;
+
+      _scanRecursive(dir, 0, 5, seen, found);
+    } catch (_) {
+      continue;
+    }
   }
 
-  return results;
+  return found;
 }
 
 void _scanRecursive(
@@ -211,7 +335,7 @@ void _scanRecursive(
   int currentDepth,
   int maxDepth,
   Set<String> seen,
-  List<Map<String, dynamic>> results,
+  List<String> results,
 ) {
   if (currentDepth >= maxDepth) return;
 
@@ -219,28 +343,28 @@ void _scanRecursive(
     final List<FileSystemEntity> entities = dir.listSync(followLinks: false);
     for (final FileSystemEntity entity in entities) {
       if (entity is File) {
-        final String lower = entity.path.toLowerCase();
-        if ((lower.endsWith('.epub') || lower.endsWith('.pdf')) &&
-            !seen.contains(entity.path)) {
-          seen.add(entity.path);
-          int size = 0;
-          try {
-            size = entity.lengthSync();
-          } catch (_) {}
-          results.add(<String, dynamic>{
-            'path': entity.path,
-            'size': size,
-          });
+        final String path = entity.path;
+        final String lower = path.toLowerCase();
+        if (lower.endsWith('.epub') &&
+            !seen.contains(path) &&
+            !path.contains('/.') &&
+            !path.contains('Android/data')) {
+          seen.add(path);
+          results.add(path);
         }
       } else if (entity is Directory) {
-        _scanRecursive(entity, currentDepth + 1, maxDepth, seen, results);
+        final String dirName = entity.path.split('/').last;
+        // Skip hidden and system directories
+        if (!dirName.startsWith('.') && dirName != 'Android') {
+          _scanRecursive(entity, currentDepth + 1, maxDepth, seen, results);
+        }
       }
     }
   } catch (_) {}
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 4. SORT MODE
+// 5. SORT MODE
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 enum SortMode { alphabetical, recentlyAdded, byProgress }
@@ -273,18 +397,17 @@ List<BookModel> _sortBooks(List<BookModel> books, SortMode mode) {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 5. HELPERS
+// 6. HELPERS
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Color _colorForTitle(String title) {
   if (title.isEmpty) return const Color(0xFFE94560);
-  final String upper = title[0].toUpperCase();
-  final int code = upper.codeUnitAt(0);
-  if (code >= 65 && code <= 69) return const Color(0xFFE94560); // A-E red
-  if (code >= 70 && code <= 74) return const Color(0xFF7C6AF7); // F-J purple
-  if (code >= 75 && code <= 79) return const Color(0xFF2EC4B6); // K-O teal
-  if (code >= 80 && code <= 84) return const Color(0xFFF7B731); // P-T amber
-  if (code >= 85 && code <= 90) return const Color(0xFF4A9EFF); // U-Z blue
+  final int code = title[0].toUpperCase().codeUnitAt(0);
+  if (code >= 65 && code <= 69) return const Color(0xFFE94560);
+  if (code >= 70 && code <= 74) return const Color(0xFF7C6AF7);
+  if (code >= 75 && code <= 79) return const Color(0xFF2EC4B6);
+  if (code >= 80 && code <= 84) return const Color(0xFFF7B731);
+  if (code >= 85 && code <= 90) return const Color(0xFF4A9EFF);
   return const Color(0xFFE94560);
 }
 
@@ -299,7 +422,7 @@ String _formatReadingTime(int fileSizeBytes) {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 6. LIBRARY SCREEN
+// 7. LIBRARY SCREEN
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class LibraryScreen extends ConsumerStatefulWidget {
@@ -309,135 +432,236 @@ class LibraryScreen extends ConsumerStatefulWidget {
   ConsumerState<LibraryScreen> createState() => _LibraryScreenState();
 }
 
-class _LibraryScreenState extends ConsumerState<LibraryScreen> {
+class _LibraryScreenState extends ConsumerState<LibraryScreen>
+    with WidgetsBindingObserver {
   SortMode _sortMode = SortMode.alphabetical;
+  bool _awaitingPermissionReturn = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadAndScan();
     });
   }
 
-  Future<void> _loadAndScan() async {
-    final LibraryBooksNotifier notifier =
-        ref.read(libraryBooksProvider.notifier);
-    await notifier.loadFromPrefs();
-    await _startBackgroundScan();
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
   }
 
-  Future<bool> _requestPermission() async {
-    if (!Platform.isAndroid) return true;
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _awaitingPermissionReturn) {
+      _awaitingPermissionReturn = false;
+      _checkPermissionAndScan();
+    }
+  }
 
-    final bool alreadyGranted =
-        await Permission.manageExternalStorage.isGranted;
-    if (alreadyGranted) return true;
+  Future<void> _checkPermissionAndScan() async {
+    try {
+      final bool granted =
+          await Permission.manageExternalStorage.isGranted;
+      if (granted) {
+        await _startBackgroundScan();
+      }
+    } catch (_) {}
+  }
 
-    if (!mounted) return false;
+  Future<void> _loadAndScan() async {
+    try {
+      final LibraryBooksNotifier notifier =
+          ref.read(libraryBooksProvider.notifier);
+      await notifier.loadFromPrefs();
+      await _refreshProgress();
+      await _requestAndScan();
+    } catch (_) {}
+  }
 
-    final bool? userAccepted = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (BuildContext ctx) => AlertDialog(
-        backgroundColor: Theme.of(ctx).colorScheme.surface,
-        title: Text(
-          'Storage Access Required',
-          style: TextStyle(color: Theme.of(ctx).colorScheme.onSurface),
-        ),
-        content: Text(
-          'Reverie needs storage access to find your books '
-          'automatically. Please allow access on the next screen.',
-          style: TextStyle(
-            color: Theme.of(ctx).colorScheme.onSurface.withValues(alpha: 0.7),
+  Future<void> _refreshProgress() async {
+    try {
+      final SharedPreferences prefs = await SharedPreferences.getInstance();
+      final LibraryBooksNotifier notifier =
+          ref.read(libraryBooksProvider.notifier);
+      final List<BookModel> books = ref.read(libraryBooksProvider);
+      for (final BookModel book in books) {
+        final double? progress =
+            prefs.getDouble('progress_${book.filePath.hashCode}');
+        if (progress != null && progress != book.readingProgress) {
+          notifier.updateBook(
+            book.filePath,
+            (BookModel b) => b.copyWith(readingProgress: progress),
+          );
+        }
+      }
+    } catch (_) {}
+  }
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // STORAGE PERMISSION
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Future<bool> _requestStoragePermission() async {
+    try {
+      if (Platform.isAndroid) {
+        final AndroidDeviceInfo androidInfo =
+            await DeviceInfoPlugin().androidInfo;
+        final int sdkInt = androidInfo.version.sdkInt;
+
+        if (sdkInt >= 30) {
+          final PermissionStatus status =
+              await Permission.manageExternalStorage.status;
+          if (status.isGranted) return true;
+
+          _awaitingPermissionReturn = true;
+          await openAppSettings();
+
+          // Check will happen in didChangeAppLifecycleState
+          return false;
+        } else {
+          final PermissionStatus status =
+              await Permission.storage.request();
+          return status.isGranted;
+        }
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _requestAndScan() async {
+    try {
+      if (!Platform.isAndroid) {
+        await _startBackgroundScan();
+        return;
+      }
+
+      // Check if already granted
+      final bool alreadyGranted =
+          await Permission.manageExternalStorage.isGranted;
+      if (alreadyGranted) {
+        await _startBackgroundScan();
+        return;
+      }
+
+      if (!mounted) return;
+
+      // Show explanation dialog
+      final bool? userAccepted = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (BuildContext ctx) => AlertDialog(
+          backgroundColor: Theme.of(ctx).colorScheme.surface,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
           ),
-        ),
-        actions: <Widget>[
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('Cancel'),
+          title: Text(
+            'Storage Access Required',
+            style: TextStyle(color: Theme.of(ctx).colorScheme.onSurface),
           ),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            style: TextButton.styleFrom(
-              foregroundColor: const Color(0xFFE94560),
-            ),
-            child: const Text('Open Settings'),
-          ),
-        ],
-      ),
-    );
-
-    if (userAccepted != true) return false;
-
-    await openAppSettings();
-
-    // Wait a moment for user to return from settings
-    await Future<void>.delayed(const Duration(seconds: 1));
-
-    final bool grantedAfter =
-        await Permission.manageExternalStorage.isGranted;
-    if (grantedAfter) return true;
-
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
           content: Text(
-            'Storage permission was not granted. '
-            'Some books may not be found automatically.',
+            'Reverie needs access to all files to find your '
+            'EPUB books automatically. On the next screen, please find '
+            "Reverie in the list and enable 'Allow access to manage "
+            "all files'.",
+            style: TextStyle(
+              color:
+                  Theme.of(ctx).colorScheme.onSurface.withValues(alpha: 0.7),
+              height: 1.5,
+            ),
           ),
-          duration: Duration(seconds: 4),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: Text(
+                'Skip',
+                style: TextStyle(
+                  color: Theme.of(ctx)
+                      .colorScheme
+                      .onSurface
+                      .withValues(alpha: 0.5),
+                ),
+              ),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              style: TextButton.styleFrom(
+                foregroundColor: const Color(0xFFE94560),
+              ),
+              child: const Text('Open Settings'),
+            ),
+          ],
         ),
       );
-    }
-    return false;
+
+      if (userAccepted == true) {
+        await _requestStoragePermission();
+        // If SDK < 30, permission is immediate
+        final bool nowGranted =
+            await Permission.manageExternalStorage.isGranted;
+        if (nowGranted) {
+          await _startBackgroundScan();
+        }
+      }
+    } catch (_) {}
   }
 
-  Future<void> _startBackgroundScan() async {
-    final bool hasPermission = await _requestPermission();
-    if (!hasPermission) return;
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // BACKGROUND SCAN
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+  Future<void> _startBackgroundScan() async {
+    if (ref.read(isScanningProvider)) return;
     ref.read(isScanningProvider.notifier).state = true;
 
     try {
       ref.read(scanProgressProvider.notifier).state =
-          'Preparing scan directories...';
+          'Scanning for EPUB files...';
 
-      final List<String> scanPaths = <String>[
-        '/storage/emulated/0/',
-        '/storage/emulated/0/Download/',
-        '/storage/emulated/0/Downloads/',
-        '/storage/emulated/0/Documents/',
-        '/storage/emulated/0/Books/',
-        '/storage/emulated/0/EPUB/',
-      ];
-
-      ref.read(scanProgressProvider.notifier).state = 'Scanning Downloads...';
-
-      final List<Map<String, dynamic>> rawResults =
-          await compute(_scanDirectories, scanPaths);
+      final List<String> paths =
+          await compute(_scanForEpubFiles, null);
 
       ref.read(scanProgressProvider.notifier).state =
-          'Found ${rawResults.length} books, processing...';
+          'Found ${paths.length} books, extracting metadata...';
 
-      final List<BookModel> scanned = rawResults.map((Map<String, dynamic> r) {
-        final String path = r['path'] as String;
-        final int size = r['size'] as int;
-        final String filename = path.split(Platform.pathSeparator).last;
-        final int dotIndex = filename.lastIndexOf('.');
-        final String rawName =
-            dotIndex > 0 ? filename.substring(0, dotIndex) : filename;
-        final String ext =
-            dotIndex > 0 ? filename.substring(dotIndex + 1).toLowerCase() : '';
+      final List<BookModel> scanned = <BookModel>[];
+      for (int i = 0; i < paths.length; i++) {
+        try {
+          if (mounted) {
+            ref.read(scanProgressProvider.notifier).state =
+                'Processing ${i + 1} of ${paths.length}...';
+          }
 
-        return BookModel(
-          filePath: path,
-          title: BookModel._cleanTitle(rawName),
-          fileType: ext == 'epub' ? 'epub' : 'pdf',
-          dateAdded: DateTime.now(),
-          fileSizeBytes: size,
-        );
-      }).toList();
+          final String path = paths[i];
+          final File file = File(path);
+          int fileSize = 0;
+          try {
+            fileSize = await file.length();
+          } catch (_) {}
+
+          final EpubMetadata metadata = await extractEpubMetadata(path);
+
+          String? coverB64;
+          if (metadata.coverBytes != null) {
+            coverB64 = base64Encode(metadata.coverBytes!);
+          }
+
+          scanned.add(BookModel(
+            filePath: path,
+            title: metadata.title,
+            author: metadata.author,
+            fileType: 'epub',
+            dateAdded: DateTime.now(),
+            fileSizeBytes: fileSize,
+            coverBase64: coverB64,
+          ));
+        } catch (_) {
+          continue;
+        }
+      }
 
       final LibraryBooksNotifier notifier =
           ref.read(libraryBooksProvider.notifier);
@@ -445,18 +669,32 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
       await notifier.saveToPrefs();
 
       ref.read(scanProgressProvider.notifier).state = '';
-    } catch (e) {
+    } catch (_) {
       ref.read(scanProgressProvider.notifier).state = 'Scan failed';
     } finally {
       ref.read(isScanningProvider.notifier).state = false;
     }
   }
 
+  Future<void> _onRefresh() async {
+    try {
+      await _startBackgroundScan();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Library refreshed'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (_) {}
+  }
+
   Future<void> _pickAndAddBook() async {
     try {
       final FilePickerResult? result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
-        allowedExtensions: <String>['epub', 'pdf'],
+        allowedExtensions: <String>['epub'],
         allowMultiple: false,
       );
 
@@ -465,7 +703,29 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
       if (result != null && result.files.isNotEmpty) {
         final String? path = result.files.first.path;
         if (path != null) {
-          final BookModel book = BookModel.fromFile(File(path));
+          final File file = File(path);
+          int fileSize = 0;
+          try {
+            fileSize = await file.length();
+          } catch (_) {}
+
+          final EpubMetadata metadata = await extractEpubMetadata(path);
+
+          String? coverB64;
+          if (metadata.coverBytes != null) {
+            coverB64 = base64Encode(metadata.coverBytes!);
+          }
+
+          final BookModel book = BookModel(
+            filePath: path,
+            title: metadata.title,
+            author: metadata.author,
+            fileType: 'epub',
+            dateAdded: DateTime.now(),
+            fileSizeBytes: fileSize,
+            coverBase64: coverB64,
+          );
+
           final LibraryBooksNotifier notifier =
               ref.read(libraryBooksProvider.notifier);
           notifier.addBook(book);
@@ -485,16 +745,18 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
   }
 
   void _onBookTap(BookModel book) {
-    final LibraryBooksNotifier notifier =
-        ref.read(libraryBooksProvider.notifier);
-    notifier.updateBook(
-      book.filePath,
-      (BookModel b) => b.copyWith(isNew: false),
-    );
-    notifier.saveToPrefs();
+    try {
+      final LibraryBooksNotifier notifier =
+          ref.read(libraryBooksProvider.notifier);
+      notifier.updateBook(
+        book.filePath,
+        (BookModel b) => b.copyWith(isNew: false),
+      );
+      notifier.saveToPrefs();
 
-    final String encodedPath = Uri.encodeComponent(book.filePath);
-    context.go('/reader?path=$encodedPath&type=${book.fileType}');
+      final String encodedPath = Uri.encodeComponent(book.filePath);
+      context.go('/reader?path=$encodedPath');
+    } catch (_) {}
   }
 
   void _cycleSortMode() {
@@ -510,6 +772,10 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
     });
   }
 
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // BUILD
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
@@ -523,7 +789,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
 
     final List<BookModel> sortedBooks = _sortBooks(allBooks, _sortMode);
     final List<BookModel> continueReading = allBooks
-        .where((BookModel b) => b.readingProgress > 0)
+        .where((BookModel b) => b.readingProgress > 0.05)
         .toList()
       ..sort((BookModel a, BookModel b) =>
           b.readingProgress.compareTo(a.readingProgress));
@@ -533,7 +799,6 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
       body: SafeArea(
         child: Column(
           children: <Widget>[
-            // Scan indicator
             if (isScanning) ...<Widget>[
               LinearProgressIndicator(
                 backgroundColor: Colors.transparent,
@@ -551,8 +816,6 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                   ),
                 ),
             ],
-
-            // Top bar
             Padding(
               padding:
                   const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
@@ -573,14 +836,13 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                     onPressed: () {
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
-                          content: Text('TODO: Search coming soon'),
+                          content: Text('Search coming soon'),
                           duration: Duration(seconds: 1),
                         ),
                       );
                     },
                     icon: Icon(Icons.search_rounded, color: muted),
                   ),
-                  // Sort button
                   Column(
                     mainAxisSize: MainAxisSize.min,
                     children: <Widget>[
@@ -612,13 +874,15 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                 ],
               ),
             ),
-
-            // Main content
             Expanded(
               child: sortedBooks.isEmpty
                   ? _buildEmptyState(scheme, muted)
-                  : _buildMainContent(
-                      sortedBooks, continueReading, theme, scheme, muted),
+                  : RefreshIndicator(
+                      color: const Color(0xFFE94560),
+                      onRefresh: _onRefresh,
+                      child: _buildMainContent(
+                          sortedBooks, continueReading, scheme, muted),
+                    ),
             ),
           ],
         ),
@@ -644,7 +908,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
           ),
           const SizedBox(height: 16),
           Text(
-            'Tap + to add books or wait for scan to complete',
+            'Tap + to add books or pull down to scan',
             style: TextStyle(color: muted, fontSize: 13),
           ),
         ],
@@ -655,14 +919,13 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
   Widget _buildMainContent(
     List<BookModel> sortedBooks,
     List<BookModel> continueReading,
-    ThemeData theme,
     ColorScheme scheme,
     Color muted,
   ) {
     return ListView(
+      physics: const AlwaysScrollableScrollPhysics(),
       padding: EdgeInsets.zero,
       children: <Widget>[
-        // Continue Reading section
         if (continueReading.isNotEmpty) ...<Widget>[
           Padding(
             padding: const EdgeInsets.only(left: 16, top: 8, bottom: 10),
@@ -689,10 +952,8 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
           ),
           const SizedBox(height: 16),
         ],
-
-        // All books
         ...sortedBooks.map((BookModel book) =>
-            _buildBookCard(book, theme, scheme, muted)),
+            _buildBookCard(book, scheme, muted)),
         const SizedBox(height: 80),
       ],
     );
@@ -703,7 +964,6 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
     ColorScheme scheme,
     Color muted,
   ) {
-    final Color coverColor = _colorForTitle(book.title);
     final int progressPct = (book.readingProgress * 100).round();
 
     return GestureDetector(
@@ -722,25 +982,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                 padding: const EdgeInsets.all(8),
                 child: Row(
                   children: <Widget>[
-                    Container(
-                      width: 40,
-                      decoration: BoxDecoration(
-                        color: coverColor,
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Center(
-                        child: Text(
-                          book.title.isNotEmpty
-                              ? book.title[0].toUpperCase()
-                              : '?',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ),
+                    _buildSmallCover(book, 40, double.infinity),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Column(
@@ -795,13 +1037,12 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
 
   Widget _buildBookCard(
     BookModel book,
-    ThemeData theme,
     ColorScheme scheme,
     Color muted,
   ) {
-    final Color coverColor = _colorForTitle(book.title);
     final String readTime = _formatReadingTime(book.fileSizeBytes);
     final int progressPct = (book.readingProgress * 100).round();
+    final bool showProgress = book.readingProgress > 0.05;
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 10, left: 16, right: 16),
@@ -809,7 +1050,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
         borderRadius: BorderRadius.circular(12),
         onTap: () => _onBookTap(book),
         child: Container(
-          height: 100,
+          height: 96,
           decoration: BoxDecoration(
             color: scheme.surface,
             borderRadius: BorderRadius.circular(12),
@@ -822,30 +1063,8 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                       const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                   child: Row(
                     children: <Widget>[
-                      // Book cover placeholder
-                      Container(
-                        width: 64,
-                        height: 80,
-                        decoration: BoxDecoration(
-                          color: coverColor,
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Center(
-                          child: Text(
-                            book.title.isNotEmpty
-                                ? book.title[0].toUpperCase()
-                                : '?',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 24,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                      ),
+                      _buildSmallCover(book, 60, 76),
                       const SizedBox(width: 12),
-
-                      // Title, badge, reading time
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -861,6 +1080,16 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                                 fontWeight: FontWeight.w500,
                               ),
                             ),
+                            const SizedBox(height: 2),
+                            Text(
+                              book.author,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: muted,
+                                fontSize: 12,
+                              ),
+                            ),
                             const SizedBox(height: 4),
                             Row(
                               children: <Widget>[
@@ -871,21 +1100,21 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                                   ),
                                   decoration: BoxDecoration(
                                     border: Border.all(
-                                      color: scheme.secondary,
+                                      color: const Color(0xFFE94560),
                                       width: 1,
                                     ),
                                     borderRadius: BorderRadius.circular(4),
                                   ),
-                                  child: Text(
-                                    book.fileType.toUpperCase(),
+                                  child: const Text(
+                                    'EPUB',
                                     style: TextStyle(
-                                      color: scheme.secondary,
+                                      color: Color(0xFFE94560),
                                       fontSize: 10,
                                       fontWeight: FontWeight.w600,
                                     ),
                                   ),
                                 ),
-                                const SizedBox(width: 8),
+                                const Spacer(),
                                 Text(
                                   readTime,
                                   style: TextStyle(
@@ -898,56 +1127,23 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                           ],
                         ),
                       ),
-
-                      // Right side: progress % or NEW badge + menu
-                      Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: <Widget>[
-                          if (book.isNew)
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 6,
-                                vertical: 2,
-                              ),
-                              decoration: BoxDecoration(
-                                color: scheme.secondary,
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: const Text(
-                                'NEW',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 9,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
+                      if (showProgress)
+                        Padding(
+                          padding: const EdgeInsets.only(left: 8),
+                          child: Text(
+                            '$progressPct%',
+                            style: const TextStyle(
+                              color: Color(0xFFE94560),
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
                             ),
-                          if (book.readingProgress > 0) ...<Widget>[
-                            const SizedBox(height: 4),
-                            Text(
-                              '$progressPct%',
-                              style: const TextStyle(
-                                color: Color(0xFFE94560),
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ],
-                          const SizedBox(height: 4),
-                          Icon(
-                            Icons.more_vert_rounded,
-                            color: muted,
-                            size: 20,
                           ),
-                        ],
-                      ),
+                        ),
                     ],
                   ),
                 ),
               ),
-
-              // Reading progress bar
-              if (book.readingProgress > 0)
+              if (showProgress)
                 ClipRRect(
                   borderRadius: const BorderRadius.only(
                     bottomLeft: Radius.circular(12),
@@ -963,6 +1159,45 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                   ),
                 ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSmallCover(BookModel book, double width, double height) {
+    final Uint8List? cover = book.coverBytes;
+    if (cover != null && cover.isNotEmpty) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: Image.memory(
+          cover,
+          width: width,
+          height: height,
+          fit: BoxFit.cover,
+          errorBuilder: (_, Object e, StackTrace? s) =>
+              _buildLetterCover(book.title, width, height),
+        ),
+      );
+    }
+    return _buildLetterCover(book.title, width, height);
+  }
+
+  Widget _buildLetterCover(String title, double width, double height) {
+    return Container(
+      width: width,
+      height: height,
+      decoration: BoxDecoration(
+        color: _colorForTitle(title),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Center(
+        child: Text(
+          title.isNotEmpty ? title[0].toUpperCase() : '?',
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 22,
+            fontWeight: FontWeight.bold,
           ),
         ),
       ),

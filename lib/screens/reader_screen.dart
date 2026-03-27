@@ -1,14 +1,11 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
-import 'dart:ui';
 
-import 'package:epub_view/epub_view.dart';
+import 'package:epub_view/epub_view.dart' as epub;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:pdfx/pdfx.dart' hide DefaultBuilderOptions;
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -30,14 +27,14 @@ class ReadingTheme {
 
 const List<ReadingTheme> _readingThemes = <ReadingTheme>[
   ReadingTheme(
-    name: 'Dark',
-    background: Color(0xFF0F0F1A),
-    textColor: Color(0xFFF0F0F0),
-  ),
-  ReadingTheme(
     name: 'Midnight',
     background: Color(0xFF000000),
     textColor: Color(0xFFFFFFFF),
+  ),
+  ReadingTheme(
+    name: 'Dark',
+    background: Color(0xFF0F0F1A),
+    textColor: Color(0xFFF0F0F0),
   ),
   ReadingTheme(
     name: 'Paper',
@@ -73,6 +70,7 @@ class ReaderScreen extends ConsumerStatefulWidget {
 
 class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   bool _showControls = false;
+  bool _showBrightnessOverlay = false;
   Timer? _hideTimer;
 
   // Reading settings
@@ -82,26 +80,22 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   double _brightness = 1.0;
   String _fontFamily = 'Georgia';
   int _selectedFontIndex = 0;
-  int _selectedThemeIndex = 0;
+  int _selectedSpacingIndex = 1;
+  int _selectedThemeIndex = 1;
 
   // Progress tracking
-  int _currentPage = 1;
-  int _totalPages = 1;
+  int _currentChapterIndex = 0;
+  int _totalChapters = 1;
   String _currentChapter = '';
-  late bool _isEpub;
+  String _bookTitle = '';
 
-  // Bookmarks
-  List<int> _bookmarks = <int>[];
-
-  EpubController? _epubController;
-  PdfController? _pdfController;
+  epub.EpubController? _epubController;
 
   String get _prefsPrefix => 'reader_${widget.filePath.hashCode}';
 
   @override
   void initState() {
     super.initState();
-    _isEpub = widget.filePath.toLowerCase().endsWith('.epub');
     _loadAllSettings();
     _initReader();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
@@ -110,8 +104,8 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   @override
   void dispose() {
     _hideTimer?.cancel();
+    _saveProgress();
     _epubController?.dispose();
-    _pdfController?.dispose();
     _resetBrightness();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     super.dispose();
@@ -122,15 +116,16 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   void _initReader() {
-    if (_isEpub) {
-      _epubController = EpubController(
-        document: EpubDocument.openFile(File(widget.filePath)),
-      );
-    } else {
-      _pdfController = PdfController(
-        document: PdfDocument.openFile(widget.filePath),
-      );
-    }
+    _epubController = epub.EpubController(
+      document: epub.EpubDocument.openFile(File(widget.filePath)),
+    );
+
+    // Derive book title from file path
+    final String filename =
+        widget.filePath.split(Platform.pathSeparator).last;
+    final int dotIndex = filename.lastIndexOf('.');
+    _bookTitle =
+        dotIndex > 0 ? filename.substring(0, dotIndex) : filename;
   }
 
   Future<void> _loadAllSettings() async {
@@ -144,10 +139,10 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
           prefs.getDouble('${_prefsPrefix}_margin');
       final int? savedFontIndex =
           prefs.getInt('${_prefsPrefix}_fontIndex');
+      final int? savedSpacingIndex =
+          prefs.getInt('${_prefsPrefix}_spacingIndex');
       final int? savedThemeIndex =
           prefs.getInt('${_prefsPrefix}_themeIndex');
-      final String? bookmarksJson =
-          prefs.getString('bookmarks_${widget.filePath.hashCode}');
 
       if (mounted) {
         setState(() {
@@ -158,43 +153,16 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
             _selectedFontIndex = savedFontIndex;
             _fontFamily = _fontFamilyForIndex(savedFontIndex);
           }
+          if (savedSpacingIndex != null) _selectedSpacingIndex = savedSpacingIndex;
           if (savedThemeIndex != null) _selectedThemeIndex = savedThemeIndex;
-          if (bookmarksJson != null) {
-            _bookmarks = (jsonDecode(bookmarksJson) as List<dynamic>)
-                .cast<int>()
-                .toList();
-          }
         });
       }
 
-      // Load brightness
       try {
         final double currentBrightness =
             await ScreenBrightness().current;
         if (mounted) setState(() => _brightness = currentBrightness);
       } catch (_) {}
-
-      // Restore reading position
-      _restorePosition(prefs);
-    } catch (_) {}
-  }
-
-  void _restorePosition(SharedPreferences prefs) {
-    try {
-      final int? savedPage =
-          prefs.getInt('progress_page_${widget.filePath.hashCode}');
-      if (savedPage != null && savedPage > 0) {
-        if (_isEpub) {
-          // epub_view doesn't support direct position restoration easily
-          // Position is auto-restored by the controller for scrollable views
-        } else if (_pdfController != null) {
-          Future<void>.delayed(const Duration(milliseconds: 500), () {
-            if (mounted && _pdfController != null) {
-              _pdfController!.jumpToPage(savedPage);
-            }
-          });
-        }
-      }
     } catch (_) {}
   }
 
@@ -205,6 +173,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
       await prefs.setDouble('${_prefsPrefix}_lineSpacing', _lineSpacing);
       await prefs.setDouble('${_prefsPrefix}_margin', _horizontalMargin);
       await prefs.setInt('${_prefsPrefix}_fontIndex', _selectedFontIndex);
+      await prefs.setInt('${_prefsPrefix}_spacingIndex', _selectedSpacingIndex);
       await prefs.setInt('${_prefsPrefix}_themeIndex', _selectedThemeIndex);
     } catch (_) {}
   }
@@ -213,20 +182,14 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     try {
       final SharedPreferences prefs = await SharedPreferences.getInstance();
       final double progress =
-          _totalPages > 0 ? _currentPage / _totalPages : 0.0;
+          _totalChapters > 0 ? _currentChapterIndex / _totalChapters : 0.0;
       await prefs.setDouble(
-          'progress_${widget.filePath.hashCode}', progress);
+        'progress_${widget.filePath.hashCode}',
+        progress.clamp(0.0, 1.0),
+      );
       await prefs.setInt(
-          'progress_page_${widget.filePath.hashCode}', _currentPage);
-    } catch (_) {}
-  }
-
-  Future<void> _saveBookmarks() async {
-    try {
-      final SharedPreferences prefs = await SharedPreferences.getInstance();
-      await prefs.setString(
-        'bookmarks_${widget.filePath.hashCode}',
-        jsonEncode(_bookmarks),
+        'progress_chapter_${widget.filePath.hashCode}',
+        _currentChapterIndex,
       );
     } catch (_) {}
   }
@@ -262,7 +225,10 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   void _toggleControls() {
-    setState(() => _showControls = !_showControls);
+    setState(() {
+      _showControls = !_showControls;
+      if (!_showControls) _showBrightnessOverlay = false;
+    });
     if (_showControls) {
       _startHideTimer();
     }
@@ -271,29 +237,34 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   void _startHideTimer() {
     _hideTimer?.cancel();
     _hideTimer = Timer(const Duration(seconds: 3), () {
-      if (mounted) setState(() => _showControls = false);
-    });
-  }
-
-  void _toggleBookmark() {
-    setState(() {
-      if (_bookmarks.contains(_currentPage)) {
-        _bookmarks.remove(_currentPage);
-      } else {
-        _bookmarks.add(_currentPage);
+      if (mounted) {
+        setState(() {
+          _showControls = false;
+          _showBrightnessOverlay = false;
+        });
       }
     });
-    _saveBookmarks();
   }
 
-  bool get _isCurrentPageBookmarked => _bookmarks.contains(_currentPage);
-
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  // SETTINGS BOTTOM SHEET
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  void _showSettingsPanel() {
+  void _toggleBrightnessOverlay() {
     _hideTimer?.cancel();
+    setState(() {
+      _showBrightnessOverlay = !_showBrightnessOverlay;
+    });
+  }
+
+  bool _isDarkBackground(Color bg) {
+    return bg.computeLuminance() < 0.5;
+  }
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // FONT SETTINGS BOTTOM SHEET
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  void _showFontSettingsSheet() {
+    _hideTimer?.cancel();
+    setState(() => _showBrightnessOverlay = false);
+
     final ReadingTheme activeTheme = _readingThemes[_selectedThemeIndex];
     final bool isThemeDark = _isDarkBackground(activeTheme.background);
 
@@ -313,7 +284,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
             final Color sheetMuted = sheetText.withValues(alpha: 0.5);
 
             return Container(
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
               decoration: BoxDecoration(
                 color: sheetBg,
                 borderRadius: const BorderRadius.only(
@@ -327,7 +298,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: <Widget>[
-                    // Handle bar
+                    // Drag handle
                     Center(
                       child: Container(
                         width: 40,
@@ -338,133 +309,107 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                         ),
                       ),
                     ),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Reading settings',
+                      style: TextStyle(
+                        color: sheetText,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
                     const SizedBox(height: 20),
 
-                    // Brightness
-                    _buildSettingsRow(
-                      icon: Icons.brightness_low_rounded,
-                      label:
-                          'Brightness  ${(_brightness * 100).round()}%',
-                      labelColor: sheetText,
-                      iconColor: sheetMuted,
-                      child: Expanded(
-                        child: Slider(
-                          value: _brightness,
-                          min: 0.1,
-                          max: 1.0,
-                          activeColor: _accent,
-                          inactiveColor: sheetMuted.withValues(alpha: 0.3),
-                          onChanged: (double v) {
-                            setSheetState(() => _brightness = v);
-                            _setBrightness(v);
-                          },
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-
-                    // Font size
-                    _buildSettingsRow(
-                      icon: Icons.text_fields_rounded,
-                      label: 'Font Size  ${_fontSize.round()}px',
-                      labelColor: sheetText,
-                      iconColor: sheetMuted,
-                      child: Expanded(
-                        child: Slider(
-                          value: _fontSize,
-                          min: 14,
-                          max: 28,
-                          divisions: 14,
-                          activeColor: _accent,
-                          inactiveColor: sheetMuted.withValues(alpha: 0.3),
-                          onChanged: (double v) {
-                            setSheetState(() => _fontSize = v);
-                            setState(() {});
-                            _saveSettings();
-                          },
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-
-                    // Font family
+                    // a) Font size
                     Row(
                       children: <Widget>[
-                        Icon(Icons.font_download_rounded,
-                            color: sheetMuted, size: 20),
-                        const SizedBox(width: 12),
+                        Text('Text size',
+                            style: TextStyle(color: sheetText, fontSize: 13)),
+                        const Spacer(),
+                        _buildCircleButton(
+                          icon: Icons.remove,
+                          color: sheetMuted,
+                          onTap: () {
+                            if (_fontSize > 14) {
+                              setSheetState(() => _fontSize -= 1);
+                              setState(() {});
+                              _saveSettings();
+                            }
+                          },
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                          child: Text(
+                            '${_fontSize.round()}',
+                            style: TextStyle(
+                              color: sheetText,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        _buildCircleButton(
+                          icon: Icons.add,
+                          color: sheetMuted,
+                          onTap: () {
+                            if (_fontSize < 28) {
+                              setSheetState(() => _fontSize += 1);
+                              setState(() {});
+                              _saveSettings();
+                            }
+                          },
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 18),
+
+                    // b) Line spacing
+                    Row(
+                      children: <Widget>[
+                        Text('Spacing',
+                            style: TextStyle(color: sheetText, fontSize: 13)),
+                        const Spacer(),
+                        ..._buildSpacingPills(
+                            setSheetState, sheetText, sheetMuted),
+                      ],
+                    ),
+                    const SizedBox(height: 18),
+
+                    // c) Font family
+                    Row(
+                      children: <Widget>[
+                        Text('Font',
+                            style: TextStyle(color: sheetText, fontSize: 13)),
+                        const Spacer(),
                         ..._buildFontPills(
                             setSheetState, sheetText, sheetMuted),
                       ],
                     ),
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 18),
 
-                    // Line spacing
-                    _buildSettingsRow(
-                      icon: Icons.format_line_spacing_rounded,
-                      label:
-                          'Line Spacing  ${_lineSpacing.toStringAsFixed(1)}',
-                      labelColor: sheetText,
-                      iconColor: sheetMuted,
-                      child: Expanded(
-                        child: Slider(
-                          value: _lineSpacing,
-                          min: 1.2,
-                          max: 2.4,
-                          divisions: 12,
-                          activeColor: _accent,
-                          inactiveColor: sheetMuted.withValues(alpha: 0.3),
-                          onChanged: (double v) {
-                            setSheetState(() => _lineSpacing = v);
-                            setState(() {});
-                            _saveSettings();
-                          },
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-
-                    // Reading theme
-                    Text('Reading Theme',
-                        style: TextStyle(
-                            color: sheetText,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w500)),
+                    // d) Reading theme
+                    Text('Theme',
+                        style: TextStyle(color: sheetText, fontSize: 13)),
                     const SizedBox(height: 10),
                     Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                       children: List<Widget>.generate(
                         _readingThemes.length,
-                        (int i) => _buildThemeCircle(
-                            i, setSheetState, sheetText),
+                        (int i) {
+                          if (i > 0) {
+                            return Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: <Widget>[
+                                const SizedBox(width: 8),
+                                _buildThemeCircle(
+                                    i, setSheetState),
+                              ],
+                            );
+                          }
+                          return _buildThemeCircle(i, setSheetState);
+                        },
                       ),
                     ),
-                    const SizedBox(height: 16),
-
-                    // Margin
-                    _buildSettingsRow(
-                      icon: Icons.format_indent_increase_rounded,
-                      label:
-                          'Margin  ${_horizontalMargin.round()}px',
-                      labelColor: sheetText,
-                      iconColor: sheetMuted,
-                      child: Expanded(
-                        child: Slider(
-                          value: _horizontalMargin,
-                          min: 8,
-                          max: 48,
-                          divisions: 10,
-                          activeColor: _accent,
-                          inactiveColor: sheetMuted.withValues(alpha: 0.3),
-                          onChanged: (double v) {
-                            setSheetState(() => _horizontalMargin = v);
-                            setState(() {});
-                            _saveSettings();
-                          },
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 12),
                   ],
                 ),
               ),
@@ -477,22 +422,65 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     });
   }
 
-  Widget _buildSettingsRow({
+  Widget _buildCircleButton({
     required IconData icon,
-    required String label,
-    required Color labelColor,
-    required Color iconColor,
-    required Widget child,
+    required Color color,
+    required VoidCallback onTap,
   }) {
-    return Row(
-      children: <Widget>[
-        Icon(icon, color: iconColor, size: 20),
-        const SizedBox(width: 8),
-        Text(label,
-            style: TextStyle(color: labelColor, fontSize: 12)),
-        child,
-      ],
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 32,
+        height: 32,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          border: Border.all(color: color, width: 1),
+        ),
+        child: Icon(icon, color: color, size: 16),
+      ),
     );
+  }
+
+  List<Widget> _buildSpacingPills(
+      StateSetter setSheetState, Color textColor, Color mutedColor) {
+    const List<String> labels = <String>['Compact', 'Normal', 'Relaxed'];
+    const List<double> values = <double>[1.4, 1.8, 2.2];
+    return List<Widget>.generate(3, (int i) {
+      final bool selected = _selectedSpacingIndex == i;
+      return Padding(
+        padding: const EdgeInsets.only(left: 6),
+        child: GestureDetector(
+          onTap: () {
+            setSheetState(() {
+              _selectedSpacingIndex = i;
+              _lineSpacing = values[i];
+            });
+            setState(() {});
+            _saveSettings();
+          },
+          child: Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: selected ? _accent : Colors.transparent,
+              border: Border.all(
+                color: selected ? _accent : mutedColor,
+                width: 1,
+              ),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Text(
+              labels[i],
+              style: TextStyle(
+                color: selected ? Colors.white : textColor,
+                fontSize: 11,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ),
+      );
+    });
   }
 
   List<Widget> _buildFontPills(
@@ -501,7 +489,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     return List<Widget>.generate(3, (int i) {
       final bool selected = _selectedFontIndex == i;
       return Padding(
-        padding: const EdgeInsets.only(left: 8),
+        padding: const EdgeInsets.only(left: 6),
         child: GestureDetector(
           onTap: () {
             setSheetState(() {
@@ -513,20 +501,20 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
           },
           child: Container(
             padding:
-                const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
             decoration: BoxDecoration(
               color: selected ? _accent : Colors.transparent,
               border: Border.all(
                 color: selected ? _accent : mutedColor,
                 width: 1,
               ),
-              borderRadius: BorderRadius.circular(20),
+              borderRadius: BorderRadius.circular(16),
             ),
             child: Text(
               labels[i],
               style: TextStyle(
                 color: selected ? Colors.white : textColor,
-                fontSize: 12,
+                fontSize: 11,
                 fontWeight: FontWeight.w500,
               ),
             ),
@@ -536,8 +524,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     });
   }
 
-  Widget _buildThemeCircle(
-      int index, StateSetter setSheetState, Color labelColor) {
+  Widget _buildThemeCircle(int index, StateSetter setSheetState) {
     final ReadingTheme rt = _readingThemes[index];
     final bool selected = _selectedThemeIndex == index;
 
@@ -547,45 +534,31 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
         setState(() {});
         _saveSettings();
       },
-      child: Column(
-        children: <Widget>[
-          Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              color: rt.background,
-              shape: BoxShape.circle,
-              border: Border.all(
-                color: selected ? _accent : Colors.grey.withValues(alpha: 0.3),
-                width: selected ? 3 : 1,
-              ),
-            ),
-            child: Center(
-              child: Text(
-                'A',
-                style: TextStyle(
-                  color: rt.textColor,
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
+      child: Container(
+        width: 36,
+        height: 36,
+        decoration: BoxDecoration(
+          color: rt.background,
+          shape: BoxShape.circle,
+          border: Border.all(
+            color: selected
+                ? _accent
+                : Colors.grey.withValues(alpha: 0.3),
+            width: selected ? 2 : 1,
           ),
-          const SizedBox(height: 4),
-          Text(
-            rt.name,
+        ),
+        child: Center(
+          child: Text(
+            'A',
             style: TextStyle(
-              color: labelColor.withValues(alpha: 0.6),
-              fontSize: 10,
+              color: rt.textColor,
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
             ),
           ),
-        ],
+        ),
       ),
     );
-  }
-
-  bool _isDarkBackground(Color bg) {
-    return bg.computeLuminance() < 0.5;
   }
 
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -598,23 +571,30 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     final Color bg = activeTheme.background;
     final Color textColor = activeTheme.textColor;
     final double screenWidth = MediaQuery.of(context).size.width;
+    final bool isDark = _isDarkBackground(bg);
+    final double progress =
+        _totalChapters > 0 ? (_currentChapterIndex / _totalChapters).clamp(0.0, 1.0) : 0.0;
+    final int progressPct = (progress * 100).round();
+    final Color muted = isDark
+        ? Colors.white.withValues(alpha: 0.5)
+        : Colors.black.withValues(alpha: 0.5);
 
     return Scaffold(
       backgroundColor: bg,
       body: GestureDetector(
         onTapUp: (TapUpDetails details) {
           final double dx = details.globalPosition.dx;
-          if (dx < 80) {
-            _navigatePrevious();
-          } else if (dx > screenWidth - 80) {
-            _navigateNext();
+          final double quarter = screenWidth * 0.25;
+          if (_showBrightnessOverlay) {
+            setState(() => _showBrightnessOverlay = false);
+            return;
+          }
+          if (dx < quarter) {
+            // Left 25%: scroll up / previous
+          } else if (dx > screenWidth - quarter) {
+            // Right 25%: scroll down / next
           } else {
             _toggleControls();
-          }
-        },
-        onVerticalDragEnd: (DragEndDetails details) {
-          if (details.velocity.pixelsPerSecond.dy < -200) {
-            _showSettingsPanel();
           }
         },
         onLongPress: () {
@@ -629,56 +609,54 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
         },
         child: Stack(
           children: <Widget>[
-            _isEpub
-                ? _buildEpubReader(bg, textColor)
-                : _buildPdfReader(),
-            _buildProgressBar(),
-            if (_showControls) _buildControlsBar(bg, textColor),
+            // EPUB reader
+            _buildEpubReader(bg, textColor),
+
+            // Bottom progress section (always visible)
+            _buildBottomProgress(progress, progressPct, muted),
+
+            // Top controls bar (shows/hides)
+            if (_showControls)
+              _buildTopControlsBar(isDark, muted),
+
+            // Brightness overlay
+            if (_showBrightnessOverlay && _showControls)
+              _buildBrightnessOverlay(isDark),
           ],
         ),
       ),
     );
   }
 
-  void _navigatePrevious() {
-    if (_isEpub) {
-      // epub_view uses scrolling — no direct page nav
-    } else if (_pdfController != null && _currentPage > 1) {
-      _pdfController!.previousPage(
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeInOut,
-      );
-    }
-  }
-
-  void _navigateNext() {
-    if (_isEpub) {
-      // epub_view uses scrolling — no direct page nav
-    } else if (_pdfController != null && _currentPage < _totalPages) {
-      _pdfController!.nextPage(
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeInOut,
-      );
-    }
-  }
-
   Widget _buildEpubReader(Color bg, Color textColor) {
     if (_epubController == null) {
       return const Center(child: CircularProgressIndicator(color: _accent));
     }
-    return EpubView(
+    return epub.EpubView(
       controller: _epubController!,
       onChapterChanged: (value) {
         if (value != null && mounted) {
           setState(() {
             _currentChapter = value.chapter?.Title ?? '';
-            _currentPage = value.position.index + 1;
+            _currentChapterIndex = value.position.index + 1;
           });
           _saveProgress();
         }
       },
-      builders: EpubViewBuilders<DefaultBuilderOptions>(
-        options: DefaultBuilderOptions(
+      onDocumentLoaded: (epub.EpubBook document) {
+        if (mounted) {
+          final int chapters = document.Chapters?.length ?? 1;
+          setState(() {
+            _totalChapters = chapters > 0 ? chapters : 1;
+            _bookTitle = document.Title ?? _bookTitle;
+          });
+
+          // Restore reading position
+          _restoreChapterPosition();
+        }
+      },
+      builders: epub.EpubViewBuilders<epub.DefaultBuilderOptions>(
+        options: epub.DefaultBuilderOptions(
           chapterPadding: EdgeInsets.symmetric(
             horizontal: _horizontalMargin,
             vertical: 16,
@@ -696,128 +674,187 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     );
   }
 
-  Widget _buildPdfReader() {
-    if (_pdfController == null) {
-      return const Center(child: CircularProgressIndicator(color: _accent));
-    }
-    return PdfView(
-      controller: _pdfController!,
-      onPageChanged: (int page) {
-        if (mounted) {
-          setState(() => _currentPage = page);
-          _saveProgress();
-        }
-      },
-      onDocumentLoaded: (PdfDocument document) {
-        if (mounted) {
-          setState(() => _totalPages = document.pagesCount);
-        }
-      },
-    );
+  Future<void> _restoreChapterPosition() async {
+    try {
+      final SharedPreferences prefs = await SharedPreferences.getInstance();
+      final int? savedChapter =
+          prefs.getInt('progress_chapter_${widget.filePath.hashCode}');
+      if (savedChapter != null && savedChapter > 0 && _epubController != null) {
+        // epub_view auto-restores scroll position in most cases
+        // but we save chapter index for progress tracking
+        setState(() => _currentChapterIndex = savedChapter);
+      }
+    } catch (_) {}
   }
 
-  Widget _buildProgressBar() {
-    final double progress =
-        _totalPages > 0 ? _currentPage / _totalPages : 0.0;
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // BOTTOM PROGRESS (ALWAYS VISIBLE)
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Widget _buildBottomProgress(double progress, int progressPct, Color muted) {
     return Positioned(
       bottom: 0,
       left: 0,
       right: 0,
-      child: LinearProgressIndicator(
-        value: progress,
-        minHeight: 2,
-        backgroundColor: Colors.transparent,
-        valueColor: const AlwaysStoppedAnimation<Color>(_accent),
+      child: SizedBox(
+        height: 36,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: <Widget>[
+            LinearProgressIndicator(
+              value: progress,
+              minHeight: 3,
+              backgroundColor: Colors.transparent,
+              valueColor: const AlwaysStoppedAnimation<Color>(_accent),
+            ),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4, top: 4),
+              child: Text(
+                '$progressPct% complete',
+                style: TextStyle(color: muted, fontSize: 11),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  Widget _buildControlsBar(Color bg, Color textColor) {
-    final bool isDarkBg = _isDarkBackground(bg);
-    final Color barBg = isDarkBg
-        ? Colors.black.withValues(alpha: 0.85)
-        : Colors.white.withValues(alpha: 0.85);
-    final Color iconColor = isDarkBg ? Colors.white : Colors.black87;
-    final Color labelColor = isDarkBg ? Colors.white70 : Colors.black54;
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // TOP CONTROLS BAR
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Widget _buildTopControlsBar(bool isDark, Color muted) {
+    final Color barBg = isDark
+        ? Colors.black.withValues(alpha: 0.8)
+        : Colors.white.withValues(alpha: 0.8);
+    final Color iconColor = isDark ? Colors.white : Colors.black87;
+
+    final String displayTitle = _currentChapter.isNotEmpty
+        ? _currentChapter
+        : (_bookTitle.isNotEmpty ? _bookTitle : 'Loading...');
 
     return Positioned(
-      bottom: 0,
+      top: 0,
       left: 0,
       right: 0,
-      child: ClipRect(
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-          child: Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
-            decoration: BoxDecoration(color: barBg),
-            child: SafeArea(
-              top: false,
-              child: Row(
-                children: <Widget>[
-                  // Back button
-                  IconButton(
-                    icon: Icon(Icons.arrow_back_ios_new_rounded,
-                        color: iconColor, size: 20),
-                    onPressed: () => context.pop(),
+      child: Container(
+        color: barBg,
+        child: SafeArea(
+          bottom: false,
+          child: SizedBox(
+            height: 56,
+            child: Row(
+              children: <Widget>[
+                const SizedBox(width: 4),
+                IconButton(
+                  icon: Icon(Icons.arrow_back_ios_new_rounded,
+                      color: iconColor, size: 20),
+                  onPressed: () => context.pop(),
+                ),
+                const Spacer(),
+                Flexible(
+                  child: Text(
+                    displayTitle,
+                    style: TextStyle(color: muted, fontSize: 13),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.center,
                   ),
-
-                  // Chapter / page info
-                  Expanded(
-                    child: Text(
-                      _isEpub
-                          ? (_currentChapter.isEmpty
-                              ? 'Loading...'
-                              : _currentChapter)
-                          : '$_currentPage / $_totalPages',
-                      style: TextStyle(color: labelColor, fontSize: 13),
-                      textAlign: TextAlign.center,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-
-                  // Aa — settings
-                  IconButton(
-                    icon: Text('Aa',
-                        style: TextStyle(
-                            color: iconColor,
-                            fontSize: 16,
-                            fontWeight: FontWeight.w600)),
-                    onPressed: _showSettingsPanel,
-                  ),
-
-                  // Bookmark
-                  IconButton(
-                    icon: Icon(
-                      _isCurrentPageBookmarked
-                          ? Icons.bookmark_rounded
-                          : Icons.bookmark_border_rounded,
-                      color: _isCurrentPageBookmarked ? _accent : iconColor,
-                      size: 22,
-                    ),
-                    onPressed: _toggleBookmark,
-                  ),
-
-                  // Share placeholder
-                  IconButton(
-                    icon: Icon(Icons.share_rounded,
-                        color: iconColor, size: 20),
-                    onPressed: () {
-                      if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Share coming soon'),
-                            duration: Duration(seconds: 1),
-                          ),
-                        );
-                      }
-                    },
-                  ),
-                ],
-              ),
+                ),
+                const Spacer(),
+                // Aa — font settings
+                IconButton(
+                  icon: Text('Aa',
+                      style: TextStyle(
+                          color: iconColor,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600)),
+                  onPressed: _showFontSettingsSheet,
+                ),
+                // Brightness
+                IconButton(
+                  icon: Icon(Icons.brightness_6_rounded,
+                      color: iconColor, size: 20),
+                  onPressed: _toggleBrightnessOverlay,
+                ),
+                // More
+                IconButton(
+                  icon: Icon(Icons.more_vert_rounded,
+                      color: iconColor, size: 20),
+                  onPressed: () {
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('More options coming soon'),
+                          duration: Duration(seconds: 1),
+                        ),
+                      );
+                    }
+                  },
+                ),
+                const SizedBox(width: 4),
+              ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // BRIGHTNESS OVERLAY
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Widget _buildBrightnessOverlay(bool isDark) {
+    final Color overlayBg = isDark
+        ? const Color(0xFF1A1A2E)
+        : const Color(0xFFEDE8DF);
+    final Color overlayText = isDark
+        ? const Color(0xFFF0F0F0)
+        : const Color(0xFF1A1A1A);
+    final Color overlayMuted = overlayText.withValues(alpha: 0.4);
+
+    return Positioned(
+      top: MediaQuery.of(context).padding.top + 56 + 8,
+      right: 60,
+      child: Container(
+        width: 200,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: overlayBg,
+          borderRadius: BorderRadius.circular(12),
+          boxShadow: <BoxShadow>[
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.2),
+              blurRadius: 8,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Icon(Icons.wb_sunny_rounded, color: overlayMuted, size: 18),
+            SizedBox(
+              height: 150,
+              child: RotatedBox(
+                quarterTurns: 3,
+                child: Slider(
+                  value: _brightness,
+                  min: 0.1,
+                  max: 1.0,
+                  activeColor: _accent,
+                  inactiveColor: overlayMuted.withValues(alpha: 0.3),
+                  onChanged: (double v) {
+                    setState(() => _brightness = v);
+                    _setBrightness(v);
+                  },
+                ),
+              ),
+            ),
+            Icon(Icons.nightlight_round, color: overlayMuted, size: 18),
+          ],
         ),
       ),
     );
