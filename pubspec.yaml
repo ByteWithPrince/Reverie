@@ -40,6 +40,9 @@ dependencies:
   pdfx: ^2.9.2
   path_provider: ^2.1.5
   epub_view: ^3.2.0
+  shared_preferences: ^2.5.5
+  permission_handler: ^11.0.0
+  screen_brightness: ^0.2.2+1
 
 dev_dependencies:
   flutter_test:

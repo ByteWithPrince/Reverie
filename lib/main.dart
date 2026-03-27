@@ -37,8 +37,7 @@ final GoRouter _router = GoRouter(
       path: '/reader',
       builder: (BuildContext context, GoRouterState state) {
         final String filePath = state.uri.queryParameters['path'] ?? '';
-        final String type = state.uri.queryParameters['type'] ?? '';
-        return ReaderScreen(filePath: filePath, fileType: type);
+        return ReaderScreen(filePath: filePath);
       },
     ),
   ],
