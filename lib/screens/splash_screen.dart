@@ -3,10 +3,11 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:reverie/services/supabase_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// SPLASH SCREEN with sequential animations
+// SPLASH SCREEN — animated logo reveal
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class SplashScreen extends StatefulWidget {
@@ -83,7 +84,15 @@ class _SplashScreenState extends State<SplashScreen>
       final bool hasSeenOnboarding =
           prefs.getBool('hasSeenOnboarding') ?? false;
       if (mounted) {
-        context.go(hasSeenOnboarding ? '/library' : '/onboarding');
+        if (hasSeenOnboarding) {
+          if (SupabaseService.isInitialized && !SupabaseService.isLoggedIn) {
+            context.go('/auth');
+          } else {
+            context.go('/library');
+          }
+        } else {
+          context.go('/onboarding');
+        }
       }
     } catch (_) {
       if (mounted) context.go('/library');
@@ -102,23 +111,23 @@ class _SplashScreenState extends State<SplashScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF000000),
+      backgroundColor: const Color(0xFF0F0F1A),
       body: Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
-            // Book icon
+            // Icon
             FadeTransition(
               opacity: _iconOpacity,
               child: const Icon(
                 Icons.auto_stories_rounded,
-                size: 40,
+                size: 56,
                 color: Color(0xFFE94560),
               ),
             ),
             const SizedBox(height: 20),
 
-            // "Reverie" title
+            // Title
             FadeTransition(
               opacity: _titleOpacity,
               child: Text(

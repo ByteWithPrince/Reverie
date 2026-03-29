@@ -32,7 +32,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       await prefs.setBool('hasSeenOnboarding', true);
     } catch (_) {}
     if (mounted) {
-      context.go('/library');
+      context.go('/auth');
     }
   }
 

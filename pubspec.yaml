@@ -37,15 +37,15 @@ dependencies:
   flutter_riverpod: ^2.6.1
   go_router: ^16.2.4
   file_picker: ^10.3.10
-  pdfx: ^2.9.2
   path_provider: ^2.1.5
   epub_view: ^3.2.0
   shared_preferences: ^2.5.5
   permission_handler: ^11.0.0
-  screen_brightness: ^0.2.2+1
   device_info_plus: ^9.0.0
   archive: ^3.4.9
   google_fonts: ^6.1.0
+  supabase_flutter: ^2.3.0
+  share_plus: ^7.2.1
 
 dev_dependencies:
   flutter_test:
