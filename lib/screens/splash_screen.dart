@@ -3,8 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:reverie/services/supabase_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // SPLASH SCREEN — animated logo reveal
@@ -85,10 +85,16 @@ class _SplashScreenState extends State<SplashScreen>
           prefs.getBool('hasSeenOnboarding') ?? false;
       if (mounted) {
         if (hasSeenOnboarding) {
-          if (SupabaseService.isInitialized && !SupabaseService.isLoggedIn) {
-            context.go('/auth');
-          } else {
+          bool isLoggedIn = false;
+          try {
+            final session =
+                Supabase.instance.client.auth.currentSession;
+            isLoggedIn = session != null;
+          } catch (_) {}
+          if (isLoggedIn) {
             context.go('/library');
+          } else {
+            context.go('/auth');
           }
         } else {
           context.go('/onboarding');

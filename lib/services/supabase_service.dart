@@ -25,6 +25,16 @@ class SupabaseService {
   static String? get userId => currentUser?.id;
   static String? get userEmail => currentUser?.email;
 
+  static String get displayName {
+    final user = currentUser;
+    if (user == null) return '';
+    final meta = user.userMetadata;
+    if (meta != null && meta['full_name'] != null) {
+      return meta['full_name'] as String;
+    }
+    return user.email?.split('@').first ?? '';
+  }
+
   static Stream<AuthState> get authStateChanges {
     try {
       return client.auth.onAuthStateChange;
@@ -36,10 +46,12 @@ class SupabaseService {
   static Future<AuthResponse> signUpWithEmail({
     required String email,
     required String password,
+    String name = '',
   }) async {
     return await client.auth.signUp(
       email: email,
       password: password,
+      data: name.isNotEmpty ? {'full_name': name} : null,
     );
   }
 

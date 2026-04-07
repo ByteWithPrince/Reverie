@@ -1,12 +1,110 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:ui';
 
+import 'package:archive/archive.dart';
 import 'package:epub_view/epub_view.dart' as epub;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
+import 'package:reverie/services/streak_service.dart';
+import 'package:reverie/services/sync_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// TOC ENTRY MODEL
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class TocEntry {
+  final String title;
+  final String href;
+  final int index;
+  TocEntry({
+    required this.title,
+    required this.href,
+    required this.index,
+  });
+}
+
+/// Parses the EPUB's own navigation file to extract
+/// real chapter structure — supports EPUB2 NCX and EPUB3 nav.xhtml.
+Future<List<TocEntry>> parseEpubToc(String filePath) async {
+  final List<TocEntry> entries = [];
+
+  try {
+    final bytes = await File(filePath).readAsBytes();
+    final archive = ZipDecoder().decodeBytes(bytes);
+
+    // Try nav.xhtml first (EPUB3)
+    ArchiveFile? navFile;
+    ArchiveFile? ncxFile;
+
+    for (final file in archive) {
+      final name = file.name.toLowerCase();
+      if (name.endsWith('nav.xhtml') || name.contains('nav.html')) {
+        navFile = file;
+      }
+      if (name.endsWith('.ncx')) {
+        ncxFile = file;
+      }
+    }
+
+    // Parse EPUB3 nav.xhtml
+    if (navFile != null) {
+      final content = utf8.decode(navFile.content as List<int>);
+      final linkRegex = RegExp(
+        r'<a[^>]*href="([^"]*)"[^>]*>([^<]+)<\/a>',
+        caseSensitive: false,
+      );
+      final matches = linkRegex.allMatches(content);
+      int index = 0;
+      for (final match in matches) {
+        final title = match.group(2)?.trim() ?? '';
+        final href = match.group(1)?.trim() ?? '';
+        if (title.isNotEmpty &&
+            !href.startsWith('http') &&
+            title.length < 100) {
+          entries.add(TocEntry(
+            title: title,
+            href: href,
+            index: index,
+          ));
+          index++;
+        }
+      }
+    }
+
+    // Fall back to EPUB2 .ncx file
+    if (entries.isEmpty && ncxFile != null) {
+      final content = utf8.decode(ncxFile.content as List<int>);
+      final navPointRegex = RegExp(
+        r'<navPoint[^>]*>.*?<text>([^<]+)<\/text>'
+        r'.*?<content\s+src="([^"]*)"',
+        caseSensitive: false,
+        dotAll: true,
+      );
+      final matches = navPointRegex.allMatches(content);
+      int index = 0;
+      for (final match in matches) {
+        final title = match.group(1)?.trim() ?? '';
+        final href = match.group(2)?.trim() ?? '';
+        if (title.isNotEmpty) {
+          entries.add(TocEntry(
+            title: title,
+            href: href,
+            index: index,
+          ));
+          index++;
+        }
+      }
+    }
+  } catch (e) {
+    debugPrint('TOC parse error: $e');
+  }
+
+  return entries;
+}
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // READER SCREEN
@@ -20,11 +118,14 @@ class ReaderScreen extends StatefulWidget {
   State<ReaderScreen> createState() => _ReaderScreenState();
 }
 
-class _ReaderScreenState extends State<ReaderScreen> {
+class _ReaderScreenState extends State<ReaderScreen>
+    with SingleTickerProviderStateMixin {
   epub.EpubController? _controller;
   bool _showControls = false;
   Timer? _hideTimer;
   Timer? _saveDebouncer;
+  bool _loadError = false;
+  String _errorMessage = '';
 
   // Settings
   double _fontSize = 18.0;
@@ -40,9 +141,15 @@ class _ReaderScreenState extends State<ReaderScreen> {
   double _progress = 0.0;
   int _totalChapters = 0;
   int _currentChapterIndex = 0;
+  List<TocEntry> _tocEntries = [];
 
   // Session tracking
   late final DateTime _sessionStart;
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+
+  // Controls fade animation
+  late final AnimationController _controlsAnimController;
+  late final Animation<double> _controlsOpacity;
 
   static const List<Map<String, dynamic>> _themes = [
     {'name': 'Dark', 'bg': Color(0xFF0f0f1a), 'text': Color(0xFFf0f0f0)},
@@ -62,9 +169,25 @@ class _ReaderScreenState extends State<ReaderScreen> {
   void initState() {
     super.initState();
     _sessionStart = DateTime.now();
+
+    _controlsAnimController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 200),
+    );
+    _controlsOpacity = CurvedAnimation(
+      parent: _controlsAnimController,
+      curve: Curves.easeInOut,
+    );
+
     _loadSettings();
     _initReader();
+    _loadToc();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+
+    // Record reading streak
+    try {
+      StreakService.recordReadingToday();
+    } catch (_) {}
   }
 
   @override
@@ -72,11 +195,46 @@ class _ReaderScreenState extends State<ReaderScreen> {
     _hideTimer?.cancel();
     _saveDebouncer?.cancel();
     _saveSessionTime();
+    _syncToCloud();
+    _controlsAnimController.dispose();
     _controller?.currentValueListenable.removeListener(
         _onScrollPositionChanged);
     _controller?.dispose();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     super.dispose();
+  }
+
+  void _syncToCloud() {
+    try {
+      final sessionMinutes =
+          DateTime.now().difference(_sessionStart).inMinutes;
+      final bookName =
+          widget.filePath.split('/').last.replaceAll('.epub', '');
+      SyncService.syncBookProgress(
+        fileName: widget.filePath.split('/').last,
+        title: _currentChapter.isNotEmpty ? _currentChapter : bookName,
+        author: '',
+        progress: _progress,
+        totalMinutes: sessionMinutes,
+      );
+      SyncService.syncReadingSession(
+        bookTitle: bookName,
+        minutesRead: sessionMinutes,
+      );
+    } catch (_) {}
+  }
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // TOC LOADING
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Future<void> _loadToc() async {
+    try {
+      final entries = await parseEpubToc(widget.filePath);
+      if (mounted) {
+        setState(() => _tocEntries = entries);
+      }
+    } catch (_) {}
   }
 
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -187,14 +345,14 @@ class _ReaderScreenState extends State<ReaderScreen> {
         _controller!.currentValueListenable
             .addListener(_onScrollPositionChanged);
       });
+      if (mounted) setState(() => _loadError = false);
     } catch (e) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not open book: $e')),
-        );
-        context.pop();
-      });
+      if (mounted) {
+        setState(() {
+          _loadError = true;
+          _errorMessage = e.toString();
+        });
+      }
     }
   }
 
@@ -245,14 +403,22 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   void _toggleControls() {
-    setState(() => _showControls = !_showControls);
     if (_showControls) {
-      _hideTimer?.cancel();
-      _hideTimer = Timer(const Duration(seconds: 3), () {
+      _controlsAnimController.reverse().then((_) {
         if (mounted) setState(() => _showControls = false);
       });
-    } else {
       _hideTimer?.cancel();
+    } else {
+      setState(() => _showControls = true);
+      _controlsAnimController.forward();
+      _hideTimer?.cancel();
+      _hideTimer = Timer(const Duration(seconds: 3), () {
+        if (mounted) {
+          _controlsAnimController.reverse().then((_) {
+            if (mounted) setState(() => _showControls = false);
+          });
+        }
+      });
     }
   }
 
@@ -272,11 +438,15 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (_loadError) return _buildErrorScreen();
+
     // ignore: deprecated_member_use
     return WillPopScope(
       onWillPop: _onWillPop,
       child: Scaffold(
+        key: _scaffoldKey,
         backgroundColor: _bgColor,
+        drawer: _buildTocDrawer(),
         body: GestureDetector(
           onTap: _toggleControls,
           child: ColorFiltered(
@@ -289,11 +459,176 @@ class _ReaderScreenState extends State<ReaderScreen> {
             child: Stack(
               children: [
                 _buildEpubReader(),
-                if (_showControls) _buildTopBar(),
+                if (_showControls)
+                  FadeTransition(
+                    opacity: _controlsOpacity,
+                    child: _buildTopBar(),
+                  ),
                 _buildBottomProgress(),
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildErrorScreen() {
+    return Scaffold(
+      backgroundColor: const Color(0xFF0f0f1a),
+      body: SafeArea(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 32),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.error_outline_rounded,
+                    size: 64, color: Colors.redAccent),
+                const SizedBox(height: 20),
+                const Text(
+                  'Could not open book',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  widget.filePath.split('/').last,
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.4),
+                    fontSize: 13,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                if (_errorMessage.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    _errorMessage,
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.3),
+                      fontSize: 11,
+                    ),
+                    textAlign: TextAlign.center,
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+                const SizedBox(height: 32),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: () {
+                      setState(() {
+                        _loadError = false;
+                        _errorMessage = '';
+                      });
+                      _initReader();
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFE94560),
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                    child: const Text('Try Again'),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton(
+                    onPressed: () {
+                      if (context.canPop()) {
+                        context.pop();
+                      } else {
+                        context.go('/library');
+                      }
+                    },
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.white70,
+                      side: const BorderSide(color: Colors.white24),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                    child: const Text('Go Back'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTocDrawer() {
+    return Drawer(
+      backgroundColor: _bgColor,
+      child: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(20),
+              child: Text(
+                'Contents',
+                style: TextStyle(
+                  color: _textColor,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+            Divider(color: _textColor.withValues(alpha: 0.1)),
+            Expanded(
+              child: _tocEntries.isEmpty
+                  ? Center(
+                      child: Text('Loading...',
+                          style: TextStyle(
+                              color: _textColor.withValues(alpha: 0.5))))
+                  : ListView.builder(
+                      itemCount: _tocEntries.length,
+                      itemBuilder: (ctx, i) {
+                        final entry = _tocEntries[i];
+                        final isCurrent = i == _currentChapterIndex;
+                        return ListTile(
+                          title: Text(
+                            entry.title,
+                            style: TextStyle(
+                              color: isCurrent
+                                  ? const Color(0xFFe94560)
+                                  : _textColor,
+                              fontSize: 14,
+                              fontWeight: isCurrent
+                                  ? FontWeight.w500
+                                  : FontWeight.normal,
+                            ),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          leading: isCurrent
+                              ? const Icon(Icons.bookmark_rounded,
+                                  color: Color(0xFFe94560), size: 16)
+                              : null,
+                          onTap: () {
+                            Navigator.pop(ctx);
+                            try {
+                              _controller?.jumpTo(index: i);
+                              setState(() => _currentChapterIndex = i);
+                            } catch (e) {
+                              debugPrint('Jump error: $e');
+                            }
+                          },
+                        );
+                      },
+                    ),
+            ),
+          ],
         ),
       ),
     );
@@ -309,9 +644,26 @@ class _ReaderScreenState extends State<ReaderScreen> {
       controller: _controller!,
       onDocumentLoaded: (epub.EpubBook document) {
         if (!mounted) return;
-        final total = document.Chapters?.length ?? 0;
+        final chapters = document.Chapters ?? [];
+        final total = chapters.length;
         if (total > 0) {
-          setState(() => _totalChapters = total);
+          setState(() {
+            _totalChapters = total;
+          });
+          // If TOC parsing found nothing, fall back to document chapters
+          if (_tocEntries.isEmpty) {
+            setState(() {
+              _tocEntries = chapters
+                  .asMap()
+                  .entries
+                  .map((e) => TocEntry(
+                        title: e.value.Title ?? 'Chapter ${e.key + 1}',
+                        href: '',
+                        index: e.key,
+                      ))
+                  .toList();
+            });
+          }
           Future.delayed(const Duration(milliseconds: 300), () {
             _loadSavedProgress();
           });
@@ -358,6 +710,14 @@ class _ReaderScreenState extends State<ReaderScreen> {
                       icon: Icon(Icons.arrow_back_ios_new_rounded,
                           color: _textColor, size: 20),
                       onPressed: _onWillPop,
+                    ),
+                    IconButton(
+                      icon: Icon(
+                          Icons.format_list_bulleted_rounded,
+                          color: _textColor, size: 20),
+                      onPressed: () {
+                        _scaffoldKey.currentState?.openDrawer();
+                      },
                     ),
                     Expanded(
                       child: Text(

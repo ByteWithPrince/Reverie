@@ -4,8 +4,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:reverie/screens/auth_screen.dart';
 import 'package:reverie/screens/library_screen.dart';
+import 'package:reverie/screens/main_shell.dart';
 import 'package:reverie/screens/onboarding_screen.dart';
+import 'package:reverie/screens/paywall_screen.dart';
+import 'package:reverie/screens/profile_screen.dart';
 import 'package:reverie/screens/reader_screen.dart';
+import 'package:reverie/screens/recommendations_screen.dart';
 import 'package:reverie/screens/settings_screen.dart';
 import 'package:reverie/screens/splash_screen.dart';
 import 'package:reverie/theme/app_theme.dart';
@@ -48,21 +52,13 @@ final GoRouter _router = GoRouter(
       builder: (BuildContext context, GoRouterState state) =>
           const OnboardingScreen(),
     ),
+    // Auth is fullscreen — no nav bar
     GoRoute(
       path: '/auth',
       builder: (BuildContext context, GoRouterState state) =>
           const AuthScreen(),
     ),
-    GoRoute(
-      path: '/library',
-      builder: (BuildContext context, GoRouterState state) =>
-          const LibraryScreen(),
-    ),
-    GoRoute(
-      path: '/settings',
-      builder: (BuildContext context, GoRouterState state) =>
-          const SettingsScreen(),
-    ),
+    // Reader is fullscreen — no nav bar
     GoRoute(
       path: '/reader',
       builder: (BuildContext context, GoRouterState state) {
@@ -72,6 +68,40 @@ final GoRouter _router = GoRouter(
         }
         return ReaderScreen(filePath: filePath);
       },
+    ),
+    // Paywall is fullscreen — no nav bar
+    GoRoute(
+      path: '/paywall',
+      builder: (BuildContext context, GoRouterState state) =>
+          const PaywallScreen(),
+    ),
+    // Settings is fullscreen — accessed from profile
+    GoRoute(
+      path: '/settings',
+      builder: (BuildContext context, GoRouterState state) =>
+          const SettingsScreen(),
+    ),
+    // Shell route — bottom tab bar for Library, Discover, Profile
+    ShellRoute(
+      builder: (BuildContext context, GoRouterState state, Widget child) =>
+          MainShell(child: child),
+      routes: <RouteBase>[
+        GoRoute(
+          path: '/library',
+          builder: (BuildContext context, GoRouterState state) =>
+              const LibraryScreen(),
+        ),
+        GoRoute(
+          path: '/discover',
+          builder: (BuildContext context, GoRouterState state) =>
+              const RecommendationsScreen(),
+        ),
+        GoRoute(
+          path: '/profile',
+          builder: (BuildContext context, GoRouterState state) =>
+              const ProfileScreen(),
+        ),
+      ],
     ),
   ],
 );

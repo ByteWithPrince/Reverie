@@ -10,6 +10,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:reverie/providers/pro_provider.dart';
+import 'package:reverie/services/streak_service.dart';
+import 'package:reverie/services/stripe_service.dart';
+import 'package:reverie/services/supabase_service.dart';
 import 'package:reverie/theme/app_theme.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -508,7 +512,7 @@ class LibraryScreen extends ConsumerStatefulWidget {
 }
 
 class _LibraryScreenState extends ConsumerState<LibraryScreen>
-    with WidgetsBindingObserver {
+    with WidgetsBindingObserver, TickerProviderStateMixin {
   SortMode _sortMode = SortMode.alphabetical;
   bool _awaitingPermissionReturn = false;
   Timer? _scanTimeout;
@@ -516,14 +520,52 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen>
   String _searchQuery = '';
   final TextEditingController _searchController = TextEditingController();
   int _totalReadingMinutes = 0;
+  final ScrollController _scrollController = ScrollController();
+  bool _hasScrolled = false;
+  int _currentStreak = 0;
+
+  // FAB scale animation
+  late final AnimationController _fabAnimController;
+  late final Animation<double> _fabScale;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _scrollController.addListener(_onScroll);
+
+    _fabAnimController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 400),
+    );
+    _fabScale = CurvedAnimation(
+      parent: _fabAnimController,
+      curve: Curves.elasticOut,
+    );
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadAndScan();
+      _loadStreak();
+      // Delay FAB animation for a nice entrance
+      Future.delayed(const Duration(milliseconds: 600), () {
+        if (mounted) _fabAnimController.forward();
+      });
     });
+  }
+
+  void _onScroll() {
+    final scrolled = _scrollController.hasClients &&
+        _scrollController.offset > 8;
+    if (scrolled != _hasScrolled) {
+      setState(() => _hasScrolled = scrolled);
+    }
+  }
+
+  Future<void> _loadStreak() async {
+    try {
+      final streak = await StreakService.getCurrentStreak();
+      if (mounted) setState(() => _currentStreak = streak);
+    } catch (_) {}
   }
 
   @override
@@ -531,6 +573,9 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen>
     WidgetsBinding.instance.removeObserver(this);
     _searchController.dispose();
     _scanTimeout?.cancel();
+    _scrollController.removeListener(_onScroll);
+    _scrollController.dispose();
+    _fabAnimController.dispose();
     super.dispose();
   }
 
@@ -897,6 +942,14 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen>
 
   Future<void> _pickAndAddBook() async {
     try {
+      // Paywall gate: free users limited to 5 books
+      final allBooks = ref.read(libraryBooksProvider);
+      final isPro = ref.read(isProProvider);
+      if (!isPro && allBooks.length >= StripeService.freeBookLimit) {
+        if (mounted) context.push('/paywall');
+        return;
+      }
+
       final FilePickerResult? result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
         allowedExtensions: <String>['epub'],
@@ -949,8 +1002,33 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen>
     } catch (_) {}
   }
 
-  void _onBookTap(BookModel book) {
+  Future<void> _onBookTap(BookModel book) async {
     try {
+      final exists = await File(book.filePath).exists();
+      if (!exists) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                '${book.title} could not be found. '
+                'It may have been moved or deleted.'),
+              backgroundColor: Colors.red.shade800,
+              action: SnackBarAction(
+                label: 'Remove',
+                textColor: Colors.white,
+                onPressed: () {
+                  ref
+                      .read(libraryBooksProvider.notifier)
+                      .removeBook(book.filePath);
+                  ref.read(libraryBooksProvider.notifier).saveToPrefs();
+                },
+              ),
+            ),
+          );
+        }
+        return;
+      }
+
       final LibraryBooksNotifier notifier =
           ref.read(libraryBooksProvider.notifier);
       notifier.updateBook(
@@ -959,8 +1037,10 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen>
       );
       notifier.saveToPrefs();
 
-      final String encodedPath = Uri.encodeComponent(book.filePath);
-      context.go('/reader?path=$encodedPath');
+      if (mounted) {
+        final String encodedPath = Uri.encodeComponent(book.filePath);
+        context.go('/reader?path=$encodedPath');
+      }
     } catch (_) {}
   }
 
@@ -1205,7 +1285,18 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen>
                   ),
                 ),
             ],
-            Padding(
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 200),
+              decoration: BoxDecoration(
+                border: Border(
+                  bottom: BorderSide(
+                    color: _hasScrolled
+                        ? Colors.white.withValues(alpha: 0.08)
+                        : Colors.transparent,
+                    width: 0.5,
+                  ),
+                ),
+              ),
               padding:
                   const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
               child: Row(
@@ -1296,8 +1387,30 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen>
                   ),
                   IconButton(
                     onPressed: () => context.push('/settings'),
-                    icon: Icon(Icons.settings_outlined, color: muted),
+                    icon: Icon(Icons.settings_outlined,
+                        color: muted, size: 22),
                   ),
+                  GestureDetector(
+                    onTap: () => context.push('/settings'),
+                    child: SupabaseService.isLoggedIn
+                        ? CircleAvatar(
+                            radius: 16,
+                            backgroundColor: const Color(0xFFE94560),
+                            child: Text(
+                              SupabaseService.displayName.isNotEmpty
+                                  ? SupabaseService.displayName[0]
+                                      .toUpperCase()
+                                  : '?',
+                              style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w500),
+                            ),
+                          )
+                        : Icon(Icons.person_outline_rounded,
+                            color: muted, size: 24),
+                  ),
+                  const SizedBox(width: 8),
                 ],
               ),
             ),
@@ -1328,10 +1441,13 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen>
           ],
         ),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _pickAndAddBook,
-        backgroundColor: const Color(0xFFE94560),
-        child: const Icon(Icons.add, color: Colors.white),
+      floatingActionButton: ScaleTransition(
+        scale: _fabScale,
+        child: FloatingActionButton(
+          onPressed: _pickAndAddBook,
+          backgroundColor: const Color(0xFFE94560),
+          child: const Icon(Icons.add, color: Colors.white),
+        ),
       ),
     );
   }
@@ -1352,6 +1468,45 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen>
             'Tap + to add books or pull down to scan',
             style: TextStyle(color: muted, fontSize: 13),
           ),
+          if (!SupabaseService.isLoggedIn) ...[
+            const SizedBox(height: 24),
+            Container(
+              margin: const EdgeInsets.symmetric(horizontal: 32),
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: scheme.surface,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                    color: muted.withValues(alpha: 0.15)),
+              ),
+              child: Column(
+                children: [
+                  Icon(Icons.cloud_outlined,
+                      color: muted, size: 28),
+                  const SizedBox(height: 8),
+                  Text('Sign in to access your cloud library',
+                      style: TextStyle(
+                          color: muted, fontSize: 13),
+                      textAlign: TextAlign.center),
+                  const SizedBox(height: 12),
+                  ElevatedButton(
+                    onPressed: () => context.go('/auth'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor:
+                          const Color(0xFFE94560),
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                          borderRadius:
+                              BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 24, vertical: 8),
+                    ),
+                    child: const Text('Sign In'),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -1366,6 +1521,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen>
     int inProgress = 0,
   }) {
     return ListView(
+      controller: _scrollController,
       physics: const AlwaysScrollableScrollPhysics(),
       padding: EdgeInsets.zero,
       children: <Widget>[
@@ -1419,6 +1575,31 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen>
                               fontSize: 20,
                               fontWeight: FontWeight.w600)),
                       Text('read',
+                          style: TextStyle(color: muted, fontSize: 11)),
+                    ],
+                  ),
+                ),
+                Container(width: 1, height: 30,
+                    color: muted.withValues(alpha: 0.2)),
+                Expanded(
+                  child: Column(
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          if (_currentStreak > 2)
+                            const Icon(
+                                Icons.local_fire_department_rounded,
+                                color: Color(0xFFE94560),
+                                size: 18),
+                          Text('$_currentStreak',
+                              style: const TextStyle(
+                                  color: Color(0xFFE94560),
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.w600)),
+                        ],
+                      ),
+                      Text('day streak',
                           style: TextStyle(color: muted, fontSize: 11)),
                     ],
                   ),

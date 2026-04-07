@@ -150,6 +150,81 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 padding: const EdgeInsets.symmetric(horizontal: 20),
                 children: [
                   const SizedBox(height: 8),
+                  // User profile section
+                  if (SupabaseService.isLoggedIn) ...[
+                    Center(
+                      child: Column(
+                        children: [
+                          CircleAvatar(
+                            radius: 32,
+                            backgroundColor: accent,
+                            child: Text(
+                              SupabaseService.displayName.isNotEmpty
+                                  ? SupabaseService.displayName[0]
+                                      .toUpperCase()
+                                  : '?',
+                              style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 28,
+                                  fontWeight: FontWeight.w500),
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          Text(
+                            SupabaseService.displayName,
+                            style: TextStyle(
+                                color: scheme.onSurface,
+                                fontSize: 18,
+                                fontWeight: FontWeight.w500),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            SupabaseService.userEmail ?? '',
+                            style: TextStyle(color: muted, fontSize: 13),
+                          ),
+                          const SizedBox(height: 8),
+                          TextButton(
+                            onPressed: () => ScaffoldMessenger.of(context)
+                                .showSnackBar(const SnackBar(
+                                    content:
+                                        Text('Edit profile coming soon'))),
+                            child: Text('Edit Profile',
+                                style: TextStyle(
+                                    color: accent, fontSize: 13)),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ] else ...[
+                    Center(
+                      child: Column(
+                        children: [
+                          Icon(Icons.person_outline_rounded,
+                              size: 64, color: muted),
+                          const SizedBox(height: 8),
+                          Text('Sign in to sync your library',
+                              style: TextStyle(
+                                  color: muted, fontSize: 14)),
+                          const SizedBox(height: 12),
+                          ElevatedButton(
+                            onPressed: () => context.go('/auth'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: accent,
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(
+                                  borderRadius:
+                                      BorderRadius.circular(10)),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 24, vertical: 10),
+                            ),
+                            child: const Text('Sign In'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                  Divider(
+                      color: muted.withValues(alpha: 0.15), height: 32),
                   _sectionTitle('Appearance', scheme),
                   _settingTile(
                     icon: isDark
@@ -379,24 +454,28 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     ],
                   ),
                   const SizedBox(height: 8),
-                  _settingTile(
-                    icon: SupabaseService.isLoggedIn
-                        ? Icons.logout_rounded
-                        : Icons.login_rounded,
-                    title: SupabaseService.isLoggedIn
-                        ? 'Sign Out'
-                        : 'Sign In',
-                    trailing: Icon(Icons.chevron_right_rounded, color: muted),
-                    onTap: () async {
-                      if (SupabaseService.isLoggedIn) {
+                  if (SupabaseService.isLoggedIn)
+                    _settingTile(
+                      icon: Icons.logout_rounded,
+                      title: 'Sign Out',
+                      titleColor: Colors.redAccent,
+                      trailing: Icon(Icons.chevron_right_rounded, color: muted),
+                      onTap: () async {
                         try {
                           await SupabaseService.signOut();
                         } catch (_) {}
-                      }
-                      if (mounted) context.go('/auth');
-                    },
-                    scheme: scheme,
-                  ),
+                        if (mounted) context.go('/auth');
+                      },
+                      scheme: scheme,
+                    )
+                  else
+                    _settingTile(
+                      icon: Icons.login_rounded,
+                      title: 'Sign In',
+                      trailing: Icon(Icons.chevron_right_rounded, color: muted),
+                      onTap: () => context.go('/auth'),
+                      scheme: scheme,
+                    ),
                   const SizedBox(height: 80),
                 ],
               ),
