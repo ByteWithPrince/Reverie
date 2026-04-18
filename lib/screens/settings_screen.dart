@@ -3,13 +3,16 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:reverie/screens/library_screen.dart';
+import 'package:reverie/services/ai_service.dart';
 import 'package:reverie/services/supabase_service.dart';
 import 'package:reverie/theme/app_theme.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 const Color _defaultAccent = Color(0xFFE94560);
 
-final StateProvider<Color> accentColorProvider =
-    StateProvider<Color>((Ref ref) => _defaultAccent);
+final StateProvider<Color> accentColorProvider = StateProvider<Color>(
+  (Ref ref) => _defaultAccent,
+);
 
 const List<Color> _accentOptions = [
   Color(0xFFE94560),
@@ -31,6 +34,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   double _defaultLineHeight = 1.8;
   String _defaultFontFamily = 'Georgia';
   int _defaultThemeIndex = 0;
+  final TextEditingController _apiKeyController = TextEditingController();
+  bool _apiKeySaved = false;
+  bool _aiConfigured = false;
+
+  @override
+  void dispose() {
+    _apiKeyController.dispose();
+    super.dispose();
+  }
 
   static const List<Map<String, dynamic>> _readingThemes = [
     {'name': 'Dark', 'bg': Color(0xFF0f0f1a), 'text': Color(0xFFf0f0f0)},
@@ -55,6 +67,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         _defaultLineHeight = prefs.getDouble('reader_lineHeight') ?? 1.8;
         _defaultFontFamily = prefs.getString('reader_fontFamily') ?? 'Georgia';
         _defaultThemeIndex = prefs.getInt('reader_theme') ?? 0;
+        _aiConfigured = AiService.isConfigured;
+        final savedKey = prefs.getString('gemini_api_key') ?? '';
+        if (savedKey.isNotEmpty) _apiKeyController.text = savedKey;
       });
     } catch (_) {}
   }
@@ -76,16 +91,21 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         builder: (ctx) => AlertDialog(
           title: const Text('Clear Library?'),
           content: const Text(
-              'This will remove all books from your library. '
-              'Your EPUB files will not be deleted.'),
+            'This will remove all books from your library. '
+            'Your EPUB files will not be deleted.',
+          ),
           actions: [
             TextButton(
-                onPressed: () => Navigator.pop(ctx, false),
-                child: const Text('Cancel')),
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
             TextButton(
-                onPressed: () => Navigator.pop(ctx, true),
-                child: const Text('Clear',
-                    style: TextStyle(color: Colors.redAccent))),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text(
+                'Clear',
+                style: TextStyle(color: Colors.redAccent),
+              ),
+            ),
           ],
         ),
       );
@@ -93,9 +113,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         ref.read(libraryBooksProvider.notifier).setBooks([]);
         await ref.read(libraryBooksProvider.notifier).saveToPrefs();
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Library cleared')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('Library cleared')));
         }
       }
     } catch (_) {}
@@ -124,8 +144,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               child: Row(
                 children: [
                   IconButton(
-                    icon: Icon(Icons.arrow_back_ios_new_rounded,
-                        color: scheme.onSurface, size: 20),
+                    icon: Icon(
+                      Icons.arrow_back_ios_new_rounded,
+                      color: scheme.onSurface,
+                      size: 20,
+                    ),
                     onPressed: () {
                       if (context.canPop()) {
                         context.pop();
@@ -135,11 +158,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     },
                   ),
                   const Spacer(),
-                  Text('Settings',
-                      style: TextStyle(
-                          color: scheme.onSurface,
-                          fontSize: 18,
-                          fontWeight: FontWeight.w500)),
+                  Text(
+                    'Settings',
+                    style: TextStyle(
+                      color: scheme.onSurface,
+                      fontSize: 18,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
                   const Spacer(),
                   const SizedBox(width: 48),
                 ],
@@ -160,22 +186,23 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                             backgroundColor: accent,
                             child: Text(
                               SupabaseService.displayName.isNotEmpty
-                                  ? SupabaseService.displayName[0]
-                                      .toUpperCase()
+                                  ? SupabaseService.displayName[0].toUpperCase()
                                   : '?',
                               style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 28,
-                                  fontWeight: FontWeight.w500),
+                                color: Colors.white,
+                                fontSize: 28,
+                                fontWeight: FontWeight.w500,
+                              ),
                             ),
                           ),
                           const SizedBox(height: 12),
                           Text(
                             SupabaseService.displayName,
                             style: TextStyle(
-                                color: scheme.onSurface,
-                                fontSize: 18,
-                                fontWeight: FontWeight.w500),
+                              color: scheme.onSurface,
+                              fontSize: 18,
+                              fontWeight: FontWeight.w500,
+                            ),
                           ),
                           const SizedBox(height: 4),
                           Text(
@@ -184,13 +211,16 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                           ),
                           const SizedBox(height: 8),
                           TextButton(
-                            onPressed: () => ScaffoldMessenger.of(context)
-                                .showSnackBar(const SnackBar(
-                                    content:
-                                        Text('Edit profile coming soon'))),
-                            child: Text('Edit Profile',
-                                style: TextStyle(
-                                    color: accent, fontSize: 13)),
+                            onPressed: () =>
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('Edit profile coming soon'),
+                                  ),
+                                ),
+                            child: Text(
+                              'Edit Profile',
+                              style: TextStyle(color: accent, fontSize: 13),
+                            ),
                           ),
                         ],
                       ),
@@ -199,12 +229,16 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     Center(
                       child: Column(
                         children: [
-                          Icon(Icons.person_outline_rounded,
-                              size: 64, color: muted),
+                          Icon(
+                            Icons.person_outline_rounded,
+                            size: 64,
+                            color: muted,
+                          ),
                           const SizedBox(height: 8),
-                          Text('Sign in to sync your library',
-                              style: TextStyle(
-                                  color: muted, fontSize: 14)),
+                          Text(
+                            'Sign in to sync your library',
+                            style: TextStyle(color: muted, fontSize: 14),
+                          ),
                           const SizedBox(height: 12),
                           ElevatedButton(
                             onPressed: () => context.go('/auth'),
@@ -212,10 +246,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                               backgroundColor: accent,
                               foregroundColor: Colors.white,
                               shape: RoundedRectangleBorder(
-                                  borderRadius:
-                                      BorderRadius.circular(10)),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
                               padding: const EdgeInsets.symmetric(
-                                  horizontal: 24, vertical: 10),
+                                horizontal: 24,
+                                vertical: 10,
+                              ),
                             ),
                             child: const Text('Sign In'),
                           ),
@@ -223,19 +259,21 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       ),
                     ),
                   ],
-                  Divider(
-                      color: muted.withValues(alpha: 0.15), height: 32),
+                  Divider(color: muted.withValues(alpha: 0.15), height: 32),
                   _sectionTitle('Appearance', scheme),
                   _settingTile(
                     icon: isDark
                         ? Icons.dark_mode_rounded
                         : Icons.light_mode_rounded,
                     title: 'Theme',
-                    trailing: Text(isDark ? 'Dark' : 'Light',
-                        style: TextStyle(color: muted, fontSize: 14)),
+                    trailing: Text(
+                      isDark ? 'Dark' : 'Light',
+                      style: TextStyle(color: muted, fontSize: 14),
+                    ),
                     onTap: () {
-                      ref.read(themeModeProvider.notifier).state =
-                          isDark ? ThemeMode.light : ThemeMode.dark;
+                      ref.read(themeModeProvider.notifier).state = isDark
+                          ? ThemeMode.light
+                          : ThemeMode.dark;
                     },
                     scheme: scheme,
                   ),
@@ -246,7 +284,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       width: 24,
                       height: 24,
                       decoration: BoxDecoration(
-                          color: accent, shape: BoxShape.circle),
+                        color: accent,
+                        shape: BoxShape.circle,
+                      ),
                     ),
                     onTap: () => _showAccentPicker(accent),
                     scheme: scheme,
@@ -258,15 +298,20 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     padding: const EdgeInsets.symmetric(vertical: 8),
                     child: Row(
                       children: [
-                        Icon(Icons.text_fields_rounded,
-                            color: muted, size: 20),
+                        Icon(Icons.text_fields_rounded, color: muted, size: 20),
                         const SizedBox(width: 12),
-                        Text('Font size',
-                            style: TextStyle(
-                                color: scheme.onSurface, fontSize: 15)),
+                        Text(
+                          'Font size',
+                          style: TextStyle(
+                            color: scheme.onSurface,
+                            fontSize: 15,
+                          ),
+                        ),
                         const Spacer(),
-                        Text('${_defaultFontSize.toInt()}',
-                            style: TextStyle(color: muted, fontSize: 14)),
+                        Text(
+                          '${_defaultFontSize.toInt()}',
+                          style: TextStyle(color: muted, fontSize: 14),
+                        ),
                         SizedBox(
                           width: 120,
                           child: Slider(
@@ -289,27 +334,52 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     padding: const EdgeInsets.symmetric(vertical: 8),
                     child: Row(
                       children: [
-                        Icon(Icons.format_line_spacing_rounded,
-                            color: muted, size: 20),
+                        Icon(
+                          Icons.format_line_spacing_rounded,
+                          color: muted,
+                          size: 20,
+                        ),
                         const SizedBox(width: 12),
-                        Text('Spacing',
-                            style: TextStyle(
-                                color: scheme.onSurface, fontSize: 15)),
+                        Text(
+                          'Spacing',
+                          style: TextStyle(
+                            color: scheme.onSurface,
+                            fontSize: 15,
+                          ),
+                        ),
                         const Spacer(),
-                        _pill('Compact', _defaultLineHeight == 1.4, () {
-                          setState(() => _defaultLineHeight = 1.4);
-                          _saveDefaults();
-                        }, accent, scheme),
+                        _pill(
+                          'Compact',
+                          _defaultLineHeight == 1.4,
+                          () {
+                            setState(() => _defaultLineHeight = 1.4);
+                            _saveDefaults();
+                          },
+                          accent,
+                          scheme,
+                        ),
                         const SizedBox(width: 6),
-                        _pill('Normal', _defaultLineHeight == 1.8, () {
-                          setState(() => _defaultLineHeight = 1.8);
-                          _saveDefaults();
-                        }, accent, scheme),
+                        _pill(
+                          'Normal',
+                          _defaultLineHeight == 1.8,
+                          () {
+                            setState(() => _defaultLineHeight = 1.8);
+                            _saveDefaults();
+                          },
+                          accent,
+                          scheme,
+                        ),
                         const SizedBox(width: 6),
-                        _pill('Relaxed', _defaultLineHeight == 2.2, () {
-                          setState(() => _defaultLineHeight = 2.2);
-                          _saveDefaults();
-                        }, accent, scheme),
+                        _pill(
+                          'Relaxed',
+                          _defaultLineHeight == 2.2,
+                          () {
+                            setState(() => _defaultLineHeight = 2.2);
+                            _saveDefaults();
+                          },
+                          accent,
+                          scheme,
+                        ),
                       ],
                     ),
                   ),
@@ -318,27 +388,52 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     padding: const EdgeInsets.symmetric(vertical: 8),
                     child: Row(
                       children: [
-                        Icon(Icons.font_download_outlined,
-                            color: muted, size: 20),
+                        Icon(
+                          Icons.font_download_outlined,
+                          color: muted,
+                          size: 20,
+                        ),
                         const SizedBox(width: 12),
-                        Text('Font',
-                            style: TextStyle(
-                                color: scheme.onSurface, fontSize: 15)),
+                        Text(
+                          'Font',
+                          style: TextStyle(
+                            color: scheme.onSurface,
+                            fontSize: 15,
+                          ),
+                        ),
                         const Spacer(),
-                        _pill('Serif', _defaultFontFamily == 'Georgia', () {
-                          setState(() => _defaultFontFamily = 'Georgia');
-                          _saveDefaults();
-                        }, accent, scheme),
+                        _pill(
+                          'Serif',
+                          _defaultFontFamily == 'Georgia',
+                          () {
+                            setState(() => _defaultFontFamily = 'Georgia');
+                            _saveDefaults();
+                          },
+                          accent,
+                          scheme,
+                        ),
                         const SizedBox(width: 6),
-                        _pill('Sans', _defaultFontFamily == 'Sans', () {
-                          setState(() => _defaultFontFamily = 'Sans');
-                          _saveDefaults();
-                        }, accent, scheme),
+                        _pill(
+                          'Sans',
+                          _defaultFontFamily == 'Sans',
+                          () {
+                            setState(() => _defaultFontFamily = 'Sans');
+                            _saveDefaults();
+                          },
+                          accent,
+                          scheme,
+                        ),
                         const SizedBox(width: 6),
-                        _pill('Mono', _defaultFontFamily == 'Mono', () {
-                          setState(() => _defaultFontFamily = 'Mono');
-                          _saveDefaults();
-                        }, accent, scheme),
+                        _pill(
+                          'Mono',
+                          _defaultFontFamily == 'Mono',
+                          () {
+                            setState(() => _defaultFontFamily = 'Mono');
+                            _saveDefaults();
+                          },
+                          accent,
+                          scheme,
+                        ),
                       ],
                     ),
                   ),
@@ -347,12 +442,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     padding: const EdgeInsets.symmetric(vertical: 12),
                     child: Row(
                       children: [
-                        Icon(Icons.color_lens_outlined,
-                            color: muted, size: 20),
+                        Icon(Icons.color_lens_outlined, color: muted, size: 20),
                         const SizedBox(width: 12),
-                        Text('Reading theme',
-                            style: TextStyle(
-                                color: scheme.onSurface, fontSize: 15)),
+                        Text(
+                          'Reading theme',
+                          style: TextStyle(
+                            color: scheme.onSurface,
+                            fontSize: 15,
+                          ),
+                        ),
                         const Spacer(),
                         ...List.generate(_readingThemes.length, (i) {
                           final sel = _defaultThemeIndex == i;
@@ -408,27 +506,205 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     ),
                   ),
                   Divider(color: muted.withValues(alpha: 0.15), height: 32),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 24, 16, 8),
+                        child: Text(
+                          'AI COMPANION',
+                          style: TextStyle(
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.onBackground.withOpacity(0.4),
+                            fontSize: 11,
+                            fontWeight: FontWeight.w500,
+                            letterSpacing: 1.2,
+                          ),
+                        ),
+                      ),
+                      Container(
+                        margin: const EdgeInsets.symmetric(horizontal: 16),
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: AiService.isConfigured
+                              ? Colors.green.withOpacity(0.08)
+                              : Colors.amber.withOpacity(0.08),
+                          border: Border.all(
+                            color: AiService.isConfigured
+                                ? Colors.green.withOpacity(0.3)
+                                : Colors.amber.withOpacity(0.3),
+                          ),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(
+                                  AiService.isConfigured
+                                      ? Icons.check_circle_outline
+                                      : Icons.warning_amber_rounded,
+                                  color: AiService.isConfigured
+                                      ? Colors.green
+                                      : Colors.amber,
+                                  size: 18,
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  AiService.isConfigured
+                                      ? 'AI Companion is active'
+                                      : 'AI Companion needs setup',
+                                  style: TextStyle(
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.onBackground,
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            if (!AiService.isConfigured) ...[
+                              const SizedBox(height: 8),
+                              Text(
+                                'Add your free Gemini API key to '
+                                'enable AI reading companion.',
+                                style: TextStyle(
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onBackground.withOpacity(0.6),
+                                  fontSize: 13,
+                                  height: 1.4,
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              TextButton.icon(
+                                icon: const Icon(Icons.open_in_new, size: 14),
+                                label: const Text('Get Free API Key'),
+                                style: TextButton.styleFrom(
+                                  foregroundColor: const Color(0xFFe94560),
+                                  padding: EdgeInsets.zero,
+                                ),
+                                onPressed: () async {
+                                  final uri = Uri.parse(
+                                    'https://aistudio.google.com/app/apikey',
+                                  );
+                                  await launchUrl(
+                                    uri,
+                                    mode: LaunchMode.externalApplication,
+                                  );
+                                },
+                              ),
+                              const SizedBox(height: 8),
+                              TextField(
+                                controller: _apiKeyController,
+                                style: TextStyle(
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onBackground,
+                                  fontSize: 13,
+                                ),
+                                decoration: InputDecoration(
+                                  hintText: 'Paste your API key here',
+                                  hintStyle: TextStyle(
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.onBackground.withOpacity(0.3),
+                                    fontSize: 13,
+                                  ),
+                                  filled: true,
+                                  fillColor: Theme.of(
+                                    context,
+                                  ).colorScheme.onBackground.withOpacity(0.05),
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(8),
+                                    borderSide: BorderSide.none,
+                                  ),
+                                  contentPadding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 10,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              SizedBox(
+                                width: double.infinity,
+                                child: ElevatedButton(
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: const Color(0xFFe94560),
+                                    foregroundColor: Colors.white,
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    padding: const EdgeInsets.symmetric(
+                                      vertical: 10,
+                                    ),
+                                  ),
+                                  onPressed: () async {
+                                    final key = _apiKeyController.text.trim();
+                                    if (key.isEmpty) return;
+                                    await AiService.updateApiKey(key);
+                                    setState(() => _apiKeySaved = true);
+                                    if (mounted) {
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
+                                        const SnackBar(
+                                          content: Text(
+                                            'API key saved. '
+                                            'AI Companion is ready!',
+                                          ),
+                                          backgroundColor: Color(0xFFe94560),
+                                        ),
+                                      );
+                                    }
+                                  },
+                                  child: const Text('Save API Key'),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  Divider(color: muted.withValues(alpha: 0.15), height: 32),
                   _sectionTitle('About', scheme),
                   const SizedBox(height: 16),
                   Center(
                     child: Column(
                       children: [
-                        Icon(Icons.auto_stories_rounded,
-                            size: 40, color: accent),
+                        Icon(
+                          Icons.auto_stories_rounded,
+                          size: 40,
+                          color: accent,
+                        ),
                         const SizedBox(height: 8),
-                        Text('Reverie',
-                            style: TextStyle(
-                                color: scheme.onSurface,
-                                fontSize: 22,
-                                fontWeight: FontWeight.w300,
-                                fontFamily: 'serif')),
+                        Text(
+                          'Reverie',
+                          style: TextStyle(
+                            color: scheme.onSurface,
+                            fontSize: 22,
+                            fontWeight: FontWeight.w300,
+                            fontFamily: 'serif',
+                          ),
+                        ),
                         const SizedBox(height: 4),
-                        Text('Version 1.0.0',
-                            style: TextStyle(color: muted, fontSize: 12)),
+                        Text(
+                          'Version 1.0.0',
+                          style: TextStyle(color: muted, fontSize: 12),
+                        ),
                         const SizedBox(height: 4),
-                        Text('Read freely',
-                            style: TextStyle(color: muted, fontSize: 13,
-                                letterSpacing: 2)),
+                        Text(
+                          'Read freely',
+                          style: TextStyle(
+                            color: muted,
+                            fontSize: 13,
+                            letterSpacing: 2,
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -437,19 +713,29 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       TextButton(
-                        onPressed: () => ScaffoldMessenger.of(context)
-                            .showSnackBar(const SnackBar(
-                                content: Text('Privacy Policy coming soon'))),
-                        child: Text('Privacy Policy',
-                            style: TextStyle(color: muted, fontSize: 13)),
+                        onPressed: () =>
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Privacy Policy coming soon'),
+                              ),
+                            ),
+                        child: Text(
+                          'Privacy Policy',
+                          style: TextStyle(color: muted, fontSize: 13),
+                        ),
                       ),
                       Text(' · ', style: TextStyle(color: muted)),
                       TextButton(
-                        onPressed: () => ScaffoldMessenger.of(context)
-                            .showSnackBar(const SnackBar(
-                                content: Text('Terms coming soon'))),
-                        child: Text('Terms',
-                            style: TextStyle(color: muted, fontSize: 13)),
+                        onPressed: () =>
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Terms coming soon'),
+                              ),
+                            ),
+                        child: Text(
+                          'Terms',
+                          style: TextStyle(color: muted, fontSize: 13),
+                        ),
                       ),
                     ],
                   ),
@@ -489,12 +775,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   Widget _sectionTitle(String title, ColorScheme scheme) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
-      child: Text(title,
-          style: TextStyle(
-              color: scheme.onSurface.withValues(alpha: 0.6),
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-              letterSpacing: 1)),
+      child: Text(
+        title,
+        style: TextStyle(
+          color: scheme.onSurface.withValues(alpha: 0.6),
+          fontSize: 13,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 1,
+        ),
+      ),
     );
   }
 
@@ -513,13 +802,20 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         padding: const EdgeInsets.symmetric(vertical: 12),
         child: Row(
           children: [
-            Icon(icon, color: titleColor ?? scheme.onSurface.withValues(alpha: 0.6),
-                size: 20),
+            Icon(
+              icon,
+              color: titleColor ?? scheme.onSurface.withValues(alpha: 0.6),
+              size: 20,
+            ),
             const SizedBox(width: 12),
             Expanded(
-              child: Text(title,
-                  style: TextStyle(
-                      color: titleColor ?? scheme.onSurface, fontSize: 15)),
+              child: Text(
+                title,
+                style: TextStyle(
+                  color: titleColor ?? scheme.onSurface,
+                  fontSize: 15,
+                ),
+              ),
             ),
             trailing,
           ],
@@ -528,8 +824,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
   }
 
-  Widget _pill(String label, bool selected, VoidCallback onTap,
-      Color accent, ColorScheme scheme) {
+  Widget _pill(
+    String label,
+    bool selected,
+    VoidCallback onTap,
+    Color accent,
+    ColorScheme scheme,
+  ) {
     return GestureDetector(
       onTap: onTap,
       child: Container(
@@ -538,17 +839,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           color: selected ? accent : Colors.transparent,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
-            color: selected
-                ? accent
-                : scheme.onSurface.withValues(alpha: 0.2),
+            color: selected ? accent : scheme.onSurface.withValues(alpha: 0.2),
           ),
         ),
-        child: Text(label,
-            style: TextStyle(
-              color: selected ? Colors.white : scheme.onSurface,
-              fontSize: 11,
-              fontWeight: FontWeight.w500,
-            )),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: selected ? Colors.white : scheme.onSurface,
+            fontSize: 11,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
       ),
     );
   }
@@ -565,11 +866,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text('Accent Color',
-                style: TextStyle(
-                    color: Theme.of(ctx).colorScheme.onSurface,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w500)),
+            Text(
+              'Accent Color',
+              style: TextStyle(
+                color: Theme.of(ctx).colorScheme.onSurface,
+                fontSize: 16,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
             const SizedBox(height: 20),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,

@@ -87,8 +87,7 @@ class _SplashScreenState extends State<SplashScreen>
         if (hasSeenOnboarding) {
           bool isLoggedIn = false;
           try {
-            final session =
-                Supabase.instance.client.auth.currentSession;
+            final session = Supabase.instance.client.auth.currentSession;
             isLoggedIn = session != null;
           } catch (_) {}
           if (isLoggedIn) {

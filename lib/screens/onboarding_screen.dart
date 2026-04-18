@@ -94,14 +94,16 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     icon: Icons.auto_stories_rounded,
                     title: 'Welcome to Reverie',
                     titleSize: 32,
-                    subtitle: 'Your books. Your way.\n'
+                    subtitle:
+                        'Your books. Your way.\n'
                         'Beautiful reading, completely free.',
                   ),
                   _buildPage(
                     icon: Icons.library_books_rounded,
                     title: 'Your entire library',
                     titleSize: 28,
-                    subtitle: 'Reverie automatically finds all your EPUB '
+                    subtitle:
+                        'Reverie automatically finds all your EPUB '
                         'books. No importing, no copying. Your books stay '
                         'exactly where they are.',
                   ),
@@ -132,27 +134,29 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               ),
             ),
 
-            // Navigation buttons (pages 0 and 1 only)
-            if (_currentPage < 2)
-              Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: <Widget>[
-                    if (_currentPage > 0)
-                      TextButton(
-                        onPressed: _previousPage,
-                        child: Text(
-                          'Previous',
-                          style: TextStyle(
-                            color: Colors.white.withValues(alpha: 0.5),
-                            fontSize: 14,
-                          ),
+            // Navigation buttons
+            Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 24,
+                vertical: 16,
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: <Widget>[
+                  if (_currentPage > 0 && _currentPage < 2)
+                    TextButton(
+                      onPressed: _previousPage,
+                      child: Text(
+                        'Previous',
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.5),
+                          fontSize: 14,
                         ),
-                      )
-                    else
-                      const SizedBox.shrink(),
+                      ),
+                    )
+                  else
+                    const SizedBox.shrink(),
+                  if (_currentPage < 2)
                     TextButton(
                       onPressed: _nextPage,
                       child: const Text(
@@ -163,12 +167,12 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                           fontWeight: FontWeight.w600,
                         ),
                       ),
-                    ),
-                  ],
-                ),
-              )
-            else
-              const SizedBox(height: 60),
+                    )
+                  else
+                    const SizedBox.shrink(),
+                ],
+              ),
+            ),
           ],
         ),
       ),

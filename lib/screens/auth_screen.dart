@@ -78,7 +78,8 @@ class _AuthScreenState extends State<AuthScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-                _isSignIn ? 'Welcome back!' : 'Check your email to confirm!'),
+              _isSignIn ? 'Welcome back!' : 'Check your email to confirm!',
+            ),
             backgroundColor: _accent,
           ),
         );
@@ -134,8 +135,7 @@ class _AuthScreenState extends State<AuthScreen> {
         borderRadius: BorderRadius.circular(12),
         borderSide: const BorderSide(color: _accent, width: 1.5),
       ),
-      contentPadding:
-          const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
     );
   }
 
@@ -153,8 +153,11 @@ class _AuthScreenState extends State<AuthScreen> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   // Logo
-                  const Icon(Icons.auto_stories_rounded,
-                      size: 52, color: _accent),
+                  const Icon(
+                    Icons.auto_stories_rounded,
+                    size: 52,
+                    color: _accent,
+                  ),
                   const SizedBox(height: 16),
                   Text(
                     'Reverie',
@@ -217,7 +220,9 @@ class _AuthScreenState extends State<AuthScreen> {
                           child: TextField(
                             controller: _nameController,
                             style: const TextStyle(
-                                color: Colors.white, fontSize: 15),
+                              color: Colors.white,
+                              fontSize: 15,
+                            ),
                             textInputAction: TextInputAction.next,
                             decoration: _fieldDecoration(
                               label: 'Your name',
@@ -234,8 +239,7 @@ class _AuthScreenState extends State<AuthScreen> {
                     controller: _emailController,
                     keyboardType: TextInputType.emailAddress,
                     textInputAction: TextInputAction.next,
-                    style:
-                        const TextStyle(color: Colors.white, fontSize: 15),
+                    style: const TextStyle(color: Colors.white, fontSize: 15),
                     decoration: _fieldDecoration(
                       label: 'Email address',
                       icon: Icons.email_outlined,
@@ -249,8 +253,7 @@ class _AuthScreenState extends State<AuthScreen> {
                     obscureText: !_showPassword,
                     textInputAction: TextInputAction.done,
                     onSubmitted: (_) => _submit(),
-                    style:
-                        const TextStyle(color: Colors.white, fontSize: 15),
+                    style: const TextStyle(color: Colors.white, fontSize: 15),
                     decoration: _fieldDecoration(
                       label: 'Password',
                       icon: Icons.lock_outline,
@@ -262,8 +265,8 @@ class _AuthScreenState extends State<AuthScreen> {
                           color: const Color(0x61FFFFFF),
                           size: 20,
                         ),
-                        onPressed: () => setState(
-                            () => _showPassword = !_showPassword),
+                        onPressed: () =>
+                            setState(() => _showPassword = !_showPassword),
                       ),
                     ),
                   ),
@@ -273,7 +276,8 @@ class _AuthScreenState extends State<AuthScreen> {
                     duration: const Duration(milliseconds: 200),
                     height: _errorMessage.isEmpty ? 0 : null,
                     margin: EdgeInsets.only(
-                        top: _errorMessage.isEmpty ? 0 : 16),
+                      top: _errorMessage.isEmpty ? 0 : 16,
+                    ),
                     child: _errorMessage.isEmpty
                         ? const SizedBox.shrink()
                         : Container(
@@ -283,13 +287,15 @@ class _AuthScreenState extends State<AuthScreen> {
                               color: Colors.red.withValues(alpha: 0.1),
                               borderRadius: BorderRadius.circular(8),
                               border: Border.all(
-                                  color:
-                                      Colors.red.withValues(alpha: 0.3)),
+                                color: Colors.red.withValues(alpha: 0.3),
+                              ),
                             ),
                             child: Text(
                               _errorMessage,
                               style: const TextStyle(
-                                  color: Colors.redAccent, fontSize: 13),
+                                color: Colors.redAccent,
+                                fontSize: 13,
+                              ),
                               textAlign: TextAlign.center,
                             ),
                           ),
@@ -304,10 +310,10 @@ class _AuthScreenState extends State<AuthScreen> {
                       onPressed: _isLoading ? null : _submit,
                       style: ElevatedButton.styleFrom(
                         backgroundColor: _accent,
-                        disabledBackgroundColor:
-                            _accent.withValues(alpha: 0.5),
+                        disabledBackgroundColor: _accent.withValues(alpha: 0.5),
                         shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12)),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
                         elevation: 0,
                       ),
                       child: _isLoading
@@ -315,13 +321,17 @@ class _AuthScreenState extends State<AuthScreen> {
                               width: 22,
                               height: 22,
                               child: CircularProgressIndicator(
-                                  color: Colors.white, strokeWidth: 2))
+                                color: Colors.white,
+                                strokeWidth: 2,
+                              ),
+                            )
                           : Text(
                               _isSignIn ? 'Sign In' : 'Create Account',
                               style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w500),
+                                color: Colors.white,
+                                fontSize: 16,
+                                fontWeight: FontWeight.w500,
+                              ),
                             ),
                     ),
                   ),
@@ -360,9 +370,7 @@ class _AuthScreenState extends State<AuthScreen> {
         child: Text(
           label,
           style: TextStyle(
-            color: active
-                ? Colors.white
-                : Colors.white.withValues(alpha: 0.54),
+            color: active ? Colors.white : Colors.white.withValues(alpha: 0.54),
             fontSize: 14,
             fontWeight: FontWeight.w500,
           ),

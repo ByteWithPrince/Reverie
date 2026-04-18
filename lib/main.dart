@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:reverie/screens/auth_screen.dart';
+import 'package:reverie/screens/book_detail_screen.dart';
 import 'package:reverie/screens/library_screen.dart';
 import 'package:reverie/screens/main_shell.dart';
 import 'package:reverie/screens/onboarding_screen.dart';
@@ -12,6 +13,7 @@ import 'package:reverie/screens/reader_screen.dart';
 import 'package:reverie/screens/recommendations_screen.dart';
 import 'package:reverie/screens/settings_screen.dart';
 import 'package:reverie/screens/splash_screen.dart';
+import 'package:reverie/services/ai_service.dart';
 import 'package:reverie/theme/app_theme.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -34,6 +36,8 @@ Future<void> main() async {
   } catch (_) {
     // Supabase not configured yet — app works without auth
   }
+
+  await AiService.initialize();
 
   runApp(const ProviderScope(child: ReverieApp()));
 }
@@ -63,9 +67,7 @@ final GoRouter _router = GoRouter(
       path: '/reader',
       builder: (BuildContext context, GoRouterState state) {
         final String filePath = state.uri.queryParameters['path'] ?? '';
-        if (filePath.isEmpty) {
-          return const LibraryScreen();
-        }
+        if (filePath.isEmpty) return const LibraryScreen();
         return ReaderScreen(filePath: filePath);
       },
     ),
@@ -80,6 +82,14 @@ final GoRouter _router = GoRouter(
       path: '/settings',
       builder: (BuildContext context, GoRouterState state) =>
           const SettingsScreen(),
+    ),
+    // Book detail — fullscreen, no nav bar
+    GoRoute(
+      path: '/book/:title',
+      builder: (BuildContext context, GoRouterState state) {
+        final book = state.extra as BookModel;
+        return BookDetailScreen(book: book);
+      },
     ),
     // Shell route — bottom tab bar for Library, Discover, Profile
     ShellRoute(
